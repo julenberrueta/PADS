@@ -82,20 +82,8 @@ Create a folder for the data:
 
 `mkdir ./data`
 
-Run the whole pipeline:
+Run inference pipleine:
 
-`python -m code.pipeline ./data`
-
-Refer to [Test MIMIC dataset.ipynb](https://github.com/alex-pardo/paper1/blob/main/Test%20MIMIC%20dataset.ipynb) for obtaining the AUC ROC curves.
-
-## How to run the models on a different dataset
-
-Create a virtualenv:
-
-`mkvirtualenv <virtual_env_name>`
-
-Install required libraries:
-
-`pip install -r code/requirements.txt`
+`python code/inference/inference.py`
 
 Refer to [Test custom dataset.ipynb](https://github.com/alex-pardo/paper1/blob/main/Test%20custom%20dataset.ipynb)
