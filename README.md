@@ -64,7 +64,7 @@ The variables used by PADS are the following:
 |los| days | 2 - 375 | The lower bound is limited due to the requirements of the model|
 
 
-## How to reproduce the paper
+## How to use the models in inference
 
 Create a virtualenv:
 
@@ -82,7 +82,7 @@ Create a folder for the data:
 
 `mkdir ./data`
 
-Run inference pipleine:
+Run inference pipeline:
 
 `python code/inference/inference.py`
 
