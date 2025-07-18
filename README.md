@@ -68,7 +68,11 @@ The variables used by PADS are the following:
 
 Create a virtualenv:
 
-`mkvirtualenv <virtual_env_name>`
+`python -m venv <virtual_env_name>`
+
+Activate the virtualenv:
+
+`<virtual_env_name>\Scripts\activate`
 
 Install required libraries:
 
