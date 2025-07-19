@@ -281,7 +281,7 @@ def generate_test_dataset(dataset_filename, base_path):
 
     data = pd.read_csv(data_path)
     lista_pacientes = data.stay_id.unique()
-    # data = data[data.stay_id.isin(lista_pacientes[:20])]
+    data = data[data.stay_id.isin(lista_pacientes[:20])]
 
     los = data.groupby("stay_id")["hr"].max().to_dict()
     data.loc[:, "los"] = data["stay_id"].map(los)
@@ -356,8 +356,8 @@ def _normalize(base_path, X, load=False, save=True, filename="", model=""):
         The normalized data array with the same shape as the input `X`.
     """
 
-    if filename:
-        fn = filename
+    if len(filename) > 0:
+        fn = os.path.join(base_path, filename)
     else:
         if model == "discharge":
             fn = os.path.join(base_path, "mimic_iv_normalizer_disch.pkl")
@@ -412,8 +412,8 @@ def get_mortality_predictions(base_path, dataset, mortality_model_filename):
     model_folder_path = os.path.join(base_path, "models/")
     model_path = os.path.join(model_folder_path, mortality_model_filename)
 
+    normalizer_name = "mimic_iv_normalizer.pkl"
     normalizer_folder_path = os.path.join(base_path, "normalizers/")
-    normalizer_path = os.path.join(normalizer_folder_path, "mimic_iv_normalizer.pkl")
 
     tmp_x = []
     tmp_y = []
@@ -427,7 +427,7 @@ def get_mortality_predictions(base_path, dataset, mortality_model_filename):
         X,
         load=True,
         save=False,
-        filename=normalizer_path,
+        filename=normalizer_name,
         model="mortality"
     )
 
@@ -452,8 +452,8 @@ def get_discharge_predictions(base_path, dataset, discharge_model_filename):
     model_folder_path = os.path.join(base_path, "models/")
     model_path = os.path.join(model_folder_path, discharge_model_filename)
 
+    normalizer_name = "mimic_iv_normalizer_disch.pkl"
     normalizer_folder_path = os.path.join(base_path, "normalizers/")
-    normalizer_path = os.path.join(normalizer_folder_path, "mimic_iv_normalizer_disch.pkl")
 
     X = np.vstack(list(dataset["data"].values()))[:, :, 1:]
     y = [np.array(item) for item in list(dataset["disch_outcome"].values())]
@@ -462,7 +462,7 @@ def get_discharge_predictions(base_path, dataset, discharge_model_filename):
         X,
         load=True,
         save=False,
-        filename=normalizer_path,
+        filename=normalizer_name,
         model="discharge"
     )
     X = np.nan_to_num(X)
@@ -508,7 +508,12 @@ if __name__ == "__main__":
     result = run_test_pipeline("jx_data.csv", "./", "lstm_mortality_model.keras", "lstm_discharge_model.keras")
     
     mortality_pred = result['mortality_outcome']['y_pred'][:, 1]
+    mortality_binary = (mortality_pred > .5).astype(int)
     mortality_groundtruth = result['mortality_outcome']['y_true'][:, 0]
+    print(mortality_pred)
+    print(np.unique(mortality_binary, return_counts=True))
+    print(np.unique(mortality_groundtruth, return_counts=True))
+    print(confusion_matrix(mortality_groundtruth, mortality_binary))
     _plot_roc(
         base_path="./",
         image_name="roc_mortality",
@@ -518,13 +523,13 @@ if __name__ == "__main__":
         save=True
     )
 
-    discharge_pred = result['discharge_outcome']['y_pred'][:, 1]
-    discharge_groundtruth = np.hstack(result['discharge_outcome']['y_true'])
-    _plot_roc(
-        base_path="./",
-        image_name="roc_discharge",
-        groundtruth=discharge_groundtruth,
-        predictions=discharge_groundtruth,
-        color="tab:red",
-        save=True
-    )
+    # discharge_pred = result['discharge_outcome']['y_pred'][:, 1]
+    # discharge_groundtruth = np.hstack(result['discharge_outcome']['y_true'])
+    # _plot_roc(
+    #     base_path="./",
+    #     image_name="roc_discharge",
+    #     groundtruth=discharge_groundtruth,
+    #     predictions=discharge_groundtruth,
+    #     color="tab:red",
+    #     save=True
+    # )
