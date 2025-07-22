@@ -64,7 +64,7 @@ The variables used by PADS are the following:
 |los| days | 2 - 375 | The lower bound is limited due to the requirements of the model|
 
 
-## How to use the models in inference
+## How to run the scripts
 
 Create a virtualenv:
 
@@ -81,9 +81,53 @@ Install required libraries:
 Create a folder for the data:
 
 `mkdir ./data`
+`mkdir -p ./results/images/{inference,first_48h,last_48h,last_96h}`
+`mkdir -p ./results/{retrained_zero,retrained_full,retrained_dense,retrained_lstm,retrained_base}`
 
-Run inference pipeline:
+---
 
-`python code/inference/inference.py`
+### Run inference pipeline
 
-Refer to [Test custom dataset.ipynb](https://github.com/alex-pardo/paper1/blob/main/Test%20custom%20dataset.ipynb)
+To run inference and generate evaluation plots:
+
+```bash
+python -m code.inference.inference <data_filename> --test_type <test_type>
+```
+
+Where `<test_type>` can be:
+- `inference` (entire ICU stay)
+- `first_48h`
+- `last_48h`
+- `last_96h`
+
+This pipeline allows you to:
+
+- Create **ROC-AUC curves** to evaluate model performance across different time segments:
+  - **Entire ICU stay**
+  - **First 48 hours**
+  - **Last 48 hours**
+  - **Last 96 hours**
+- Generate **prediction plots** over the entire ICU stay, showing predicted values alongside actual patient outcomes.
+
+---
+
+### Retraining pipeline
+
+To generate datasets, normalizers, and retrain models:
+
+```bash
+python -m code.retrain.retrain <data_filename> --retrain_models --generate_datasets --generate_normalizers --retrain_type <retrain_type>
+```
+
+Where `<retrain_type>` can be:
+- `full`
+- `dense`
+- `lstm`
+- `zero`
+
+This pipeline allows you to:
+
+- Retrain discharge and mortality models.
+- Generate the **datasets** needed for training.
+- Generate the **normalizers** used by the model.
+- **Retrain** models from scratch using the specified retrain type.
