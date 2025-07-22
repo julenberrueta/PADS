@@ -11,7 +11,13 @@ import pickle
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics import (classification_report, roc_curve, roc_auc_score,
                              confusion_matrix, ConfusionMatrixDisplay)
+from scipy.stats import gaussian_kde
+from sklearn.model_selection import train_test_split
+import keras.layers as layers
 from matplotlib import pyplot as plt
+import argparse
+import sys
+import json
 
 PARALLEL = True
 N_TIME_OFFSETS = 48
@@ -86,19 +92,54 @@ FEATURES = [
 ]
 
 def check_dataset(dataset_filename, base_path):
-    
-    print(f"Checking {dataset_filename} dataset completness")
 
-    data_folder_path = os.path.join(base_path, "data/")
+    data_folder_path = os.path.join(base_path, "data")
     data_path = os.path.join(data_folder_path, dataset_filename)
-    df = pd.read_csv(data_path, index_col=0)
 
-    for c in MANDATORY_COLUMNS:
-        assert c in df.columns, f"Column {c} is mandatory."
-        # assert isinstance(df[c].dtype, type(np.dtype("float64"))) or isinstance(df[c].dtype, type(np.dtype("int")))
-        assert is_numeric_dtype(df[c]), f"Column {c} must be numeric."
+    if not os.path.isfile(data_path):
+        print(f"❌ Error: El archivo '{data_path}' no existe.")
+    else:
+        df = pd.read_csv(data_path, index_col=0)
 
-    print("Check done!")
+        for c in MANDATORY_COLUMNS:
+            assert c in df.columns, f"Column {c} is mandatory."
+            # assert isinstance(df[c].dtype, type(np.dtype("float64"))) or isinstance(df[c].dtype, type(np.dtype("int")))
+            assert is_numeric_dtype(df[c]), f"Column {c} must be numeric."
+
+
+def impute_first_row(df: pd.DataFrame, medians_dict: dict) -> pd.DataFrame:
+    """
+    Imputes missing values in the specified columns:
+    1. Uses the first available value per stay_id if present.
+    2. If missing values remain, fills them with the provided global median.
+    
+    Parameters:
+        df: Original DataFrame with potential NaNs
+        medians_dict: Dictionary containing global medians for the columns
+    
+    Returns:
+        Imputed DataFrame
+    """
+    cols = list(medians_dict.keys())
+
+    first_values = (
+        df.sort_values('hr')
+          .groupby('stay_id')[cols]
+          .first()
+          .reset_index()
+    )
+
+    df_merged = df.merge(first_values, on="stay_id", suffixes=("", "_first"))
+
+    for col in cols:
+        df_merged[col] = df_merged[col].fillna(df_merged[f"{col}_first"])
+        df_merged.drop(columns=[f"{col}_first"], inplace=True)
+
+    for col in cols:
+        df_merged[col] = df_merged[col].fillna(medians_dict[col])
+
+    return df_merged
+
 
 def apply_nan_rules(df, rules):
     """
@@ -256,7 +297,7 @@ def tqdm_joblib(tqdm_object):
         joblib.parallel.BatchCompletionCallBack = old_batch_callback
         tqdm_object.close()
 
-def generate_test_dataset(dataset_filename, base_path):
+def generate_test_dataset(dataset_filename, base_path, test_type="inference"):
     """
     Generates a processed test dataset for ICU stay prediction tasks.
     This function reads a dataset from the specified path, processes each ICU stay by applying outlier correction,
@@ -276,12 +317,20 @@ def generate_test_dataset(dataset_filename, base_path):
         - Assumes existence of helper functions: correct_outliers, apply_nan_rules, _process_stay, tqdm_joblib.
     """
 
-    data_folder_path = os.path.join(base_path, "data/")
+    data_folder_path = os.path.join(base_path, "data")
     data_path = os.path.join(data_folder_path, dataset_filename)
 
     data = pd.read_csv(data_path)
-    lista_pacientes = data.stay_id.unique()
-    data = data[data.stay_id.isin(lista_pacientes[:20])]
+
+    stay_ids = data.stay_id.unique()
+    train_stays, test_stays = train_test_split(stay_ids, test_size=0.3, random_state=42)
+    data = data[data.stay_id.isin(test_stays)]
+
+    # lista_pacientes = data.stay_id.unique()
+    # data = data[data.stay_id.isin(lista_pacientes[:20])]
+
+    if test_type not in ["inference", "last_48h", "last_96h", "first_48h"]:
+        raise ValueError(f"Invalid test_type: '{test_type}'. Must be 'inference', 'last_48h', 'last_96h' or 'first_48h'.")
 
     los = data.groupby("stay_id")["hr"].max().to_dict()
     data.loc[:, "los"] = data["stay_id"].map(los)
@@ -292,7 +341,12 @@ def generate_test_dataset(dataset_filename, base_path):
     data.loc[:, "disch_48h"] = 0
     data.loc[data["hr"] >= data["los"] - (N_TIME_OFFSETS - 1), "disch_48h"] = 1
     stays_to_process = set(data["stay_id"])
+
+    with open(os.path.join(data_folder_path, "medians_48h.json"), "r") as f:
+        medians_48h = json.load(f)
+
     data = correct_outliers(data)
+    data = impute_first_row(data, medians_48h)
     data = apply_nan_rules(data, NAN_RULES)
     all_data = []
     if PARALLEL:
@@ -327,6 +381,16 @@ def generate_test_dataset(dataset_filename, base_path):
             "disch_48h"
         ].values.tolist()
     outcomes = data[["stay_id", "icu_expire_flag"]].drop_duplicates().set_index("stay_id")["icu_expire_flag"].to_dict()
+
+    if test_type == "last_48h":
+        all_data = {k: v[-48-1:] for k, v in all_data.items()}
+        disch_outcomes = {k: v[-48-1:] for k, v in disch_outcomes.items()}
+    elif test_type == "last_96h":
+        all_data = {k: v[-96-1:] for k, v in all_data.items()}
+        disch_outcomes = {k: v[-96-1:] for k, v in disch_outcomes.items()}
+    elif test_type == "first_48h":
+        all_data = {k: v[:48] for k, v in all_data.items()}
+        disch_outcomes = {k: v[:48] for k, v in disch_outcomes.items()}      
 
     print("Total stays with >={}h of data: {}.".format(N_TIME_OFFSETS, len(stays_to_process)))
     return {
@@ -379,6 +443,35 @@ def _normalize(base_path, X, load=False, save=True, filename="", model=""):
     X = X.reshape((tmp, 48, 16))
     return X
 
+class SoftmaxTemperature(layers.Layer):
+    """
+    A custom Keras layer that applies the softmax activation function with a configurable temperature.
+    The temperature parameter controls the smoothness of the output probabilities:
+    - Higher temperature produces a softer probability distribution.
+    - Lower temperature makes the distribution more peaked.
+    Args:
+        temperature (float): The temperature value to scale the inputs before applying softmax. Default is 1.0.
+        **kwargs: Additional keyword arguments passed to the base Layer class.
+    Methods:
+        call(inputs): Applies the temperature-scaled softmax to the input tensor.
+        get_config(): Returns the configuration of the layer for serialization.
+    Example:
+        layer = SoftmaxTemperature(temperature=0.5)
+    """
+
+    def __init__(self, temperature=1.0, **kwargs):
+        super(SoftmaxTemperature, self).__init__(**kwargs)
+        self.temperature = temperature
+
+    def call(self, inputs):
+        exp_x = keras.backend.exp(inputs / self.temperature)
+        return exp_x / keras.backend.sum(exp_x, axis=-1, keepdims=True)
+
+    def get_config(self):
+        config = super(SoftmaxTemperature, self).get_config()
+        config.update({"temperature": self.temperature})
+        return config
+
 def softmax_temperature(x, temperature=1.0):
     """
     Applies the softmax function with temperature scaling to the input tensor.
@@ -393,7 +486,7 @@ def softmax_temperature(x, temperature=1.0):
     exp_x = keras.backend.exp(x / temperature)
     return exp_x / keras.backend.sum(exp_x, axis=-1, keepdims=True)
 
-def get_mortality_predictions(base_path, dataset, mortality_model_filename):
+def get_mortality_predictions(base_path, dataset, mortality_model_filename, normalizer_filename):
     """
     Generates mortality predictions using a pre-trained LSTM model.
     Args:
@@ -409,11 +502,9 @@ def get_mortality_predictions(base_path, dataset, mortality_model_filename):
             - "y_pred": Predicted mortality probabilities from the model as a numpy array.
     """
 
-    model_folder_path = os.path.join(base_path, "models/")
+    model_folder_path = os.path.join(base_path, "models")
     model_path = os.path.join(model_folder_path, mortality_model_filename)
-
-    normalizer_name = "mimic_iv_normalizer.pkl"
-    normalizer_folder_path = os.path.join(base_path, "normalizers/")
+    normalizer_folder_path = os.path.join(base_path, "normalizers")
 
     tmp_x = []
     tmp_y = []
@@ -427,15 +518,15 @@ def get_mortality_predictions(base_path, dataset, mortality_model_filename):
         X,
         load=True,
         save=False,
-        filename=normalizer_name,
+        filename=normalizer_filename,
         model="mortality"
     )
 
     X = np.nan_to_num(X)
-    model_lstm = keras.models.load_model(model_path, custom_objects={'softmax_temperature': softmax_temperature})
+    model_lstm = keras.models.load_model(model_path, custom_objects={'softmax_temperature': softmax_temperature, 'SoftmaxTemperature': SoftmaxTemperature})
     return {"y_true": y, "y_pred": model_lstm.predict(X)}
 
-def get_discharge_predictions(base_path, dataset, discharge_model_filename):
+def get_discharge_predictions(base_path, dataset, discharge_model_filename, normalizer_filename):
     """
     Generates discharge outcome predictions using a pre-trained LSTM model.
     Args:
@@ -449,11 +540,9 @@ def get_discharge_predictions(base_path, dataset, discharge_model_filename):
             - "y_pred": Numpy array of predicted discharge outcomes from the model.
     """
 
-    model_folder_path = os.path.join(base_path, "models/")
+    model_folder_path = os.path.join(base_path, "models")
     model_path = os.path.join(model_folder_path, discharge_model_filename)
-
-    normalizer_name = "mimic_iv_normalizer_disch.pkl"
-    normalizer_folder_path = os.path.join(base_path, "normalizers/")
+    normalizer_folder_path = os.path.join(base_path, "normalizers")
 
     X = np.vstack(list(dataset["data"].values()))[:, :, 1:]
     y = [np.array(item) for item in list(dataset["disch_outcome"].values())]
@@ -462,35 +551,36 @@ def get_discharge_predictions(base_path, dataset, discharge_model_filename):
         X,
         load=True,
         save=False,
-        filename=normalizer_name,
+        filename=normalizer_filename,
         model="discharge"
     )
     X = np.nan_to_num(X)
-    model_lstm = keras.models.load_model(model_path, custom_objects={'softmax_temperature': softmax_temperature})
+    model_lstm = keras.models.load_model(model_path, custom_objects={'softmax_temperature': softmax_temperature, 'SoftmaxTemperature': SoftmaxTemperature})
     return {"y_true": y, "y_pred": model_lstm.predict(X)}
 
-def run_test_pipeline(dataset_filename, base_path, mortality_model_filename, disch_model_filename):
-    check_dataset(dataset_filename, base_path)
-    dataset = generate_test_dataset(dataset_filename, base_path)
-
-    mortality_outcome = get_mortality_predictions(base_path, dataset, mortality_model_filename)
-    discharge_outcome = get_discharge_predictions(base_path, dataset, disch_model_filename)
-    return {"mortality_outcome": mortality_outcome, "discharge_outcome": discharge_outcome}
-
 def _plot_roc(base_path, image_name, groundtruth, predictions, **kwargs):
-
     # path
-    results_folder_path = os.path.join(base_path, "results/")
+    results_folder_path = os.path.join(base_path, "results")
     os.makedirs(results_folder_path, exist_ok=True)
     image_path = os.path.join(results_folder_path, image_name)
 
     save_flag = kwargs.pop('save', False)
 
-    fp, tp, _ = roc_curve(groundtruth, predictions)
+    # ROC and AUC
+    fp, tp, thresholds = roc_curve(groundtruth, predictions)
     auc = roc_auc_score(groundtruth, predictions)
 
-    plt.plot(100 * fp, 100 * tp, label=f'(AUC={auc:.2f})',
-             linewidth=2, **kwargs)
+    # Optimal threshold (Youden's J)
+    j_scores = tp - fp
+    j_max_idx = np.argmax(j_scores)
+    optimal_fp = fp[j_max_idx]
+    optimal_tp = tp[j_max_idx]
+    optimal_thresh = thresholds[j_max_idx]
+
+    # Plot ROC
+    plt.figure(figsize=(6, 6))
+    plt.plot(100 * fp, 100 * tp, label=f'AUC = {auc:.2f}', linewidth=2, **kwargs)
+    plt.scatter(100 * optimal_fp, 100 * optimal_tp, color='blue', label=f'Optimal threshold = {optimal_thresh:.4f}', zorder=5)
     plt.xlabel('False positives [%]')
     plt.ylabel('True positives [%]')
     plt.xlim([0, 100])
@@ -503,33 +593,214 @@ def _plot_roc(base_path, image_name, groundtruth, predictions, **kwargs):
     if save_flag:
         plt.savefig(f'{image_path}.png', bbox_inches='tight')
         plt.close()
+    else:
+        plt.show()
 
-if __name__ == "__main__":
-    result = run_test_pipeline("jx_data.csv", "./", "lstm_mortality_model.keras", "lstm_discharge_model.keras")
-    
+    return optimal_thresh
+
+def _plot_inference(df_prob, base_path, test_type="last_96h", save=False):
+    """
+    Plots adjusted mortality probabilities over time per patient using `df_prob` which includes:
+    - mortality_prob, disch_prob, prob_mortality, color_group, stay_id, hr
+    Saves one image per patient as {stay_id}_{test_type}.png inside base_path/results/images/
+    """
+
+    save_folder = os.path.join(base_path, "results", "images")
+    os.makedirs(save_folder, exist_ok=True)
+
+    for stay_id, group_df in df_prob.groupby("stay_id"):
+        plt.figure(figsize=(10, 5))
+
+        max_hr = group_df.hr.max()
+
+        # Plot puntos coloreados por grupo
+        plt.scatter(group_df['hr'], group_df['normalized'],
+                    c=group_df['color_group'].map({
+                        "EXITUS <48h": "#f43543",
+                        "EXITUS >48h": "#ff9e30",
+                        "ALIVE <48h": "#3ab830",
+                        "ALIVE >48h": "#1097d8"
+                    }),
+                    s=50, alpha=0.85)
+
+        plt.axvline(x=max_hr-48, color='black', linestyle='--', linewidth=1.5, label='48h before discharge')
+        plt.axhline(y=50, color='gray', linestyle=':', linewidth=1.2)
+
+        plt.xlabel("hr (relative to discharge)", fontsize=12)
+        plt.ylabel("Adjusted Mortality Probability (%)", fontsize=12)
+
+        # Color de título
+        final_status = "ALIVE" if group_df['mortality_groundtruth'].iloc[-1] == 0 else "EXITUS"
+        title_color = "#3ab830" if final_status == "ALIVE" else "#f43543"
+        plt.title(f"Stay {stay_id} - {test_type}", fontsize=14, color=title_color)
+
+        plt.ylim(0, 100)
+        plt.grid(True, linestyle='--', linewidth=0.5, alpha=0.6)
+        plt.tight_layout()
+        plt.legend()
+
+        if save:
+            image_path = os.path.join(save_folder, f"{test_type}/{stay_id}.png")
+            plt.savefig(image_path, bbox_inches='tight')
+            plt.close()
+        else:
+            plt.show()
+
+def _plot_prob(base_path, image_name, groundtruth, predictions, **kwargs):
+    """
+    Plots and optionally saves the KDE distribution of predicted probabilities,
+    separated by ground truth class (0 and 1).
+
+    Args:
+        base_path (str): Directory where results folder and image will be saved.
+        image_name (str): Name of the image file (without extension).
+        groundtruth (array-like): Binary ground truth labels.
+        predictions (array-like): Predicted probabilities.
+        **kwargs: Optional keyword args, including 'save' to save the plot.
+    """
+    # Create path
+    results_folder_path = os.path.join(base_path, "results")
+    os.makedirs(results_folder_path, exist_ok=True)
+    image_path = os.path.join(results_folder_path, image_name)
+
+    save_flag = kwargs.pop('save', False)
+
+    # Separate predictions by class
+    pred_0 = predictions[groundtruth == 0]
+    pred_1 = predictions[groundtruth == 1]
+
+    # Compute KDEs
+    kde_0 = gaussian_kde(pred_0)
+    kde_1 = gaussian_kde(pred_1)
+    x = np.linspace(0, 1, 500)
+
+    # Plot
+    plt.figure(figsize=(10, 6))
+    plt.plot(x, kde_0(x), label='Ground truth: 0', color='blue')
+    plt.fill_between(x, kde_0(x), alpha=0.3, color='blue')
+    plt.plot(x, kde_1(x), label='Ground truth: 1', color='orange')
+    plt.fill_between(x, kde_1(x), alpha=0.3, color='orange')
+    plt.xlabel("Predicted Probability")
+    plt.ylabel("Density")
+    plt.title("Distribución KDE de predicciones por clase")
+    plt.legend()
+    plt.grid(True)
+    plt.tight_layout()
+
+    if save_flag:
+        plt.savefig(f"{image_path}.png", bbox_inches='tight')
+        plt.close()
+
+def split_predictions_by_patient(pred_vector, data_dict):
+    lengths = {stay_id: data.shape[0] for stay_id, data in data_dict.items()}
+    split_indices = np.cumsum(list(lengths.values()))[:-1]
+    splits = np.split(pred_vector, split_indices)
+    return {stay_id: preds for stay_id, preds in zip(lengths.keys(), splits)}
+
+def run_test_pipeline(dataset_filename, base_path, mort_normalizer_filename, disch_normalizer_filename, mort_model_filename, disch_model_filename, test_type):
+    check_dataset(dataset_filename, base_path)
+    dataset = generate_test_dataset(dataset_filename, base_path, test_type)
+    print(dataset['data'].shape)
+
+    mortality_outcome = get_mortality_predictions(base_path, dataset, mort_model_filename, mort_normalizer_filename)
+    discharge_outcome = get_discharge_predictions(base_path, dataset, disch_model_filename, disch_normalizer_filename)
+    result = {"mortality_outcome": mortality_outcome, "discharge_outcome": discharge_outcome}
+
     mortality_pred = result['mortality_outcome']['y_pred'][:, 1]
-    mortality_binary = (mortality_pred > .5).astype(int)
+    mortality_binary = (mortality_pred > .5)
     mortality_groundtruth = result['mortality_outcome']['y_true'][:, 0]
-    print(mortality_pred)
-    print(np.unique(mortality_binary, return_counts=True))
-    print(np.unique(mortality_groundtruth, return_counts=True))
-    print(confusion_matrix(mortality_groundtruth, mortality_binary))
-    _plot_roc(
+
+    opt_th_mort = _plot_roc(
         base_path="./",
-        image_name="roc_mortality",
+        image_name="roc_mortality" + "_" + test_type,
         groundtruth=mortality_groundtruth,
         predictions=mortality_pred,
         color="tab:red",
         save=True
     )
 
-    # discharge_pred = result['discharge_outcome']['y_pred'][:, 1]
-    # discharge_groundtruth = np.hstack(result['discharge_outcome']['y_true'])
-    # _plot_roc(
+    discharge_pred = result['discharge_outcome']['y_pred'][:, 1]
+    discharge_binary = (discharge_pred > .5)
+    discharge_groundtruth = np.hstack(result['discharge_outcome']['y_true'])
+
+    opt_th_disch = _plot_roc(
+        base_path="./",
+        image_name="roc_discharge" + "_" + test_type,
+        groundtruth=discharge_groundtruth,
+        predictions=discharge_pred,
+        color="tab:red",
+        save=True
+    )
+
+    # opt_th_mort = 0.0011
+    # opt_th_disch = 0.048
+
+    df_prob = pd.DataFrame({
+        'mortality_prob': mortality_pred,
+        'disch_prob': discharge_pred
+    })
+
+    df_prob['range'] = np.where(df_prob['mortality_prob']<opt_th_mort, (opt_th_mort-df_prob['mortality_prob'].min()), df_prob['mortality_prob'].max()-opt_th_mort)
+    df_prob['substract'] = np.where(df_prob['mortality_prob']<opt_th_mort, df_prob['mortality_prob']-df_prob['mortality_prob'].min(), df_prob['mortality_prob']-opt_th_mort)
+    df_prob['normalized'] = np.where(df_prob['mortality_prob']<opt_th_mort, ((df_prob['substract']/df_prob['range'])/2)*100, ((df_prob['substract']/df_prob['range']+1)/2)*100)
+
+    df_prob['disch_prob_cat'] = np.where(df_prob['disch_prob']>opt_th_disch, 1, 0)
+    df_prob['mortality_prob_cat'] = np.where(df_prob['mortality_prob']>opt_th_mort, 1, 0)
+
+    df_prob['color_group'] = np.where((df_prob['mortality_prob_cat']==1) & (df_prob['disch_prob_cat']==1), 'EXITUS <48h',
+                             np.where((df_prob['mortality_prob_cat']==1) & (df_prob['disch_prob_cat']==0), 'EXITUS >48h',
+                                     np.where((df_prob['mortality_prob_cat']==0) & (df_prob['disch_prob_cat']==0), 'ALIVE >48h', 'ALIVE <48h')))
+
+    stay_ids = [
+        stay_id
+        for stay_id, arr in dataset['data'].items()
+        for _ in range(len(arr))
+    ]
+
+    # Añadir la columna al DataFrame
+    df_prob['stay_id'] = stay_ids
+
+    # Desde -hr hasta 0
+    # df_prob['hr'] = df_prob.groupby('stay_id').cumcount() - df_prob.groupby('stay_id')['stay_id'].transform('count') + 1
+
+    # Desde 0 hasta hr
+    df_prob['hr'] = df_prob.groupby('stay_id').cumcount()
+
+    df_prob['mortality_groundtruth'] = mortality_groundtruth
+
+    data_path = os.path.join(base_path, "data")
+    data_path = os.path.join(data_path, "probs.pkl")
+    df_prob.to_pickle(data_path)
+
+    # _plot_inference(
+    #     df_prob,
+    #     './', 
+    #     test_type=test_type, 
+    #     save=True
+    # )
+
+    # _plot_prob(
     #     base_path="./",
-    #     image_name="roc_discharge",
+    #     image_name="kde_discharge" + "_" + test_type,
     #     groundtruth=discharge_groundtruth,
-    #     predictions=discharge_groundtruth,
+    #     predictions=discharge_pred,
     #     color="tab:red",
     #     save=True
     # )
+
+if __name__ == "__main__":
+
+    parser = argparse.ArgumentParser(description="Run LSTM test pipeline")
+    parser.add_argument("csv_filename", type=str, help="CSV dataset filename (e.g., jx_data.csv)")
+    parser.add_argument("--test_type", type=str, default="inference", help="Test type (inference, first_48h, last_48h, last_96h)")
+    args = parser.parse_args()
+
+    result = run_test_pipeline(
+        args.csv_filename,
+        './',
+        'mimic_iv_normalizer_disch.pkl',
+        'mimic_iv_normalizer.pkl',
+        'RETRAINED_zero_lstm_mortality_model.keras',
+        'RETRAINED_zero_lstm_discharge_model.keras',
+        args.test_type
+    )
