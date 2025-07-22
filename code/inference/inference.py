@@ -700,7 +700,6 @@ def split_predictions_by_patient(pred_vector, data_dict):
 def run_test_pipeline(dataset_filename, base_path, mort_normalizer_filename, disch_normalizer_filename, mort_model_filename, disch_model_filename, test_type):
     check_dataset(dataset_filename, base_path)
     dataset = generate_test_dataset(dataset_filename, base_path, test_type)
-    print(dataset['data'].shape)
 
     mortality_outcome = get_mortality_predictions(base_path, dataset, mort_model_filename, mort_normalizer_filename)
     discharge_outcome = get_discharge_predictions(base_path, dataset, disch_model_filename, disch_normalizer_filename)
@@ -772,12 +771,12 @@ def run_test_pipeline(dataset_filename, base_path, mort_normalizer_filename, dis
     data_path = os.path.join(data_path, "probs.pkl")
     df_prob.to_pickle(data_path)
 
-    # _plot_inference(
-    #     df_prob,
-    #     './', 
-    #     test_type=test_type, 
-    #     save=True
-    # )
+    _plot_inference(
+        df_prob,
+        './', 
+        test_type=test_type, 
+        save=True
+    )
 
     # _plot_prob(
     #     base_path="./",

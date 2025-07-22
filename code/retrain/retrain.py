@@ -330,6 +330,10 @@ def generate_mortality_dataset(base_path, dataset_filename):
     data_folder_path = os.path.join(base_path, "data")
     data = _get_data(base_path, dataset_filename)
 
+    stay_ids = data.stay_id.unique()
+    train_stays, test_stays = train_test_split(stay_ids, test_size=0.3, random_state=42)
+    data = data[data.stay_id.isin(train_stays)]
+
     with open(os.path.join(data_folder_path, "medians_48h.json"), "r") as f:
         medians_48h = json.load(f)
 
@@ -401,6 +405,10 @@ def generate_discharge_dataset(base_path, dataset_filename):
 
     data_folder_path = os.path.join(base_path, "data")
     data = _get_data(base_path, dataset_filename)
+
+    stay_ids = data.stay_id.unique()
+    train_stays, test_stays = train_test_split(stay_ids, test_size=0.3, random_state=42)
+    data = data[data.stay_id.isin(train_stays)]
 
     with open(os.path.join(data_folder_path, "medians_48h.json"), "r") as f:
         medians_48h = json.load(f)
