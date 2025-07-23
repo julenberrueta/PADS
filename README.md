@@ -80,9 +80,41 @@ Install required libraries:
 
 Create a folder for the data:
 
-`mkdir ./data`
-`mkdir -p ./results/images/{inference,first_48h,last_48h,last_96h}`
-`mkdir -p ./results/{retrained_zero,retrained_full,retrained_dense,retrained_lstm,retrained_base}`
+```bash
+mkdir ./data
+```
+
+```bash
+mkdir -p ./results/images/{inference,first_48h,last_48h,last_96h}
+```
+
+```bash
+mkdir -p ./results/{retrained_zero,retrained_full,retrained_dense,retrained_lstm,retrained_base}
+```
+
+---
+
+### Run retraining pipeline
+
+To generate datasets, normalizers, and retrain models:
+
+```bash
+python -m code.retrain.retrain <data_filename> --retrain_models --generate_datasets --generate_normalizers --retrain_type <retrain_type>
+```
+
+Where `<retrain_type>` can be:
+- `zero` (**train** a model from scrach, with randomized initialized weights)
+- `lstm` (**retrain** LSTM neurons from the weights of the lstm_discharge_model.keras modell)
+- `dense` (**retrain** DENSE neurons from the weights of the lstm_discharge_model.keras modell)
+- `full` (**retrain** ALL the neurons from the weights of the lstm_discharge_model.keras modell)
+
+
+This pipeline allows you to:
+
+- Retrain discharge and mortality models.
+- Generate the **datasets** needed for training.
+- Generate the **normalizers** used by the model.
+- **Retrain** models from scratch using the specified retrain type.
 
 ---
 
@@ -102,32 +134,13 @@ Where `<test_type>` can be:
 
 This pipeline allows you to:
 
-- Create **ROC-AUC curves** to evaluate model performance across different time segments:
+- Generate **ROC-AUC curves plots** to evaluate model performance:
+- Generate **inference prediction plots**, showing predicted values alongside actual patient outcomes.
+
+All these charts can be done across different time segments:
   - **Entire ICU stay**
   - **First 48 hours**
   - **Last 48 hours**
   - **Last 96 hours**
-- Generate **prediction plots** over the entire ICU stay, showing predicted values alongside actual patient outcomes.
 
 ---
-
-### Retraining pipeline
-
-To generate datasets, normalizers, and retrain models:
-
-```bash
-python -m code.retrain.retrain <data_filename> --retrain_models --generate_datasets --generate_normalizers --retrain_type <retrain_type>
-```
-
-Where `<retrain_type>` can be:
-- `full`
-- `dense`
-- `lstm`
-- `zero`
-
-This pipeline allows you to:
-
-- Retrain discharge and mortality models.
-- Generate the **datasets** needed for training.
-- Generate the **normalizers** used by the model.
-- **Retrain** models from scratch using the specified retrain type.

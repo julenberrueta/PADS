@@ -27,7 +27,7 @@ from ..mortality_model import _get_weights as _get_mort_weights
 PARALLEL = True
 N_TIME_OFFSETS = 48
 LEARNING_RATE_DISCH = 1e-5
-LEARNING_RATE_MORT = 1e-4
+LEARNING_RATE_MORT = 1e-5
 
 IMPUTE_FIRST_ROW = [
     "gcs_min",
@@ -220,6 +220,34 @@ def impute_first_row(df: pd.DataFrame, medians_dict: dict) -> pd.DataFrame:
 
     return df_merged
 
+def generate_train_test_split_file(dataset_filename, base_path):
+    data_folder_path = os.path.join(base_path, "data")
+    data_path = os.path.join(data_folder_path, dataset_filename)
+
+    data = pd.read_csv(data_path)
+
+    los = data.groupby("stay_id")["hr"].max().to_dict()
+    data.loc[:, "los"] = data["stay_id"].map(los)
+
+    fixed_cols = ["stay_id"]
+    time_column = "hr"
+    data = data[(data["los"] >= N_TIME_OFFSETS)].copy()
+    data.loc[:, "disch_48h"] = 0
+    data.loc[data["hr"] >= data["los"] - (N_TIME_OFFSETS - 1), "disch_48h"] = 1
+    stays_to_process = set(data["stay_id"])
+
+    stay_ids = data.stay_id.unique()
+    train_stays, test_stays = train_test_split(stay_ids, test_size=0.2, random_state=42)
+
+    # Guardar en archivos de texto
+    with open(os.path.join(data_folder_path, 'train_stays.txt'), 'w') as f:
+        for stay in train_stays:
+            f.write(f"{stay}\n")
+
+    with open(os.path.join(data_folder_path, 'test_stays.txt'), 'w') as f:
+        for stay in test_stays:
+            f.write(f"{stay}\n")
+
 def generate_normalizer_dataset(dataset_filename, base_path):
     """
     Generates a processed test dataset for ICU stay prediction tasks.
@@ -244,10 +272,6 @@ def generate_normalizer_dataset(dataset_filename, base_path):
     data_path = os.path.join(data_folder_path, dataset_filename)
 
     data = pd.read_csv(data_path)
-
-    stay_ids = data.stay_id.unique()
-    train_stays, test_stays = train_test_split(stay_ids, test_size=0.3, random_state=42)
-    data = data[data.stay_id.isin(train_stays)]
 
     los = data.groupby("stay_id")["hr"].max().to_dict()
     data.loc[:, "los"] = data["stay_id"].map(los)
@@ -330,12 +354,13 @@ def generate_mortality_dataset(base_path, dataset_filename):
     data_folder_path = os.path.join(base_path, "data")
     data = _get_data(base_path, dataset_filename)
 
-    stay_ids = data.stay_id.unique()
-    train_stays, test_stays = train_test_split(stay_ids, test_size=0.3, random_state=42)
-    data = data[data.stay_id.isin(train_stays)]
-
     with open(os.path.join(data_folder_path, "medians_48h.json"), "r") as f:
         medians_48h = json.load(f)
+
+    with open(os.path.join(data_folder_path, 'train_stays.txt'), 'r') as f:
+        train_stays = [int(line.strip()) for line in f]
+
+    data = data[data.stay_id.isin(train_stays)]
 
     data = correct_outliers(data)
     data = impute_first_row(data, medians_48h)
@@ -345,6 +370,7 @@ def generate_mortality_dataset(base_path, dataset_filename):
     time_column = "hr"
     data = data[(data["los"] >= N_TIME_OFFSETS)].copy()
     stays_to_process = set(data["stay_id"])
+
     all_data = []
     last_48h = []
     if PARALLEL:
@@ -406,12 +432,13 @@ def generate_discharge_dataset(base_path, dataset_filename):
     data_folder_path = os.path.join(base_path, "data")
     data = _get_data(base_path, dataset_filename)
 
-    stay_ids = data.stay_id.unique()
-    train_stays, test_stays = train_test_split(stay_ids, test_size=0.3, random_state=42)
-    data = data[data.stay_id.isin(train_stays)]
-
     with open(os.path.join(data_folder_path, "medians_48h.json"), "r") as f:
         medians_48h = json.load(f)
+
+    with open(os.path.join(data_folder_path, 'train_stays.txt'), 'r') as f:
+        train_stays = [int(line.strip()) for line in f]
+
+    data = data[data.stay_id.isin(train_stays)]
 
     data = correct_outliers(data)
     data = impute_first_row(data, medians_48h)
@@ -461,14 +488,16 @@ def get_discharge_normalizer(base_path, dataset):
         filename="custom_normalizer_disch.pkl",
     )
 
-def _get_train_test_split_disch(data, outcome, test_size=0.3, random_state=42):
+def _get_train_test_split_disch(data, outcome):
     
     # Obtener todos los ids de estancia (stay_id) del diccionario data
     stay_ids = list(data.keys())
     valid_stay_ids = [sid for sid in data if sid in outcome]
 
     # Dividir los stay_ids en entrenamiento y prueba
-    train_stays, test_stays = train_test_split(stay_ids, test_size=test_size, random_state=random_state)
+    train_stays, test_stays = train_test_split(stay_ids, test_size=0.2, random_state=42)
+
+    print(f"{len(train_stays)} patients for retraining discharge model")
 
     # Inicializar matrices para X_train, y_train, X_test, y_test
     X_train = np.ndarray((len(train_stays), 48, 16))
@@ -504,13 +533,15 @@ def _get_train_test_split_disch(data, outcome, test_size=0.3, random_state=42):
 
     return X_train, X_test, y_train, y_test
 
-def _get_train_test_split_mort(data, outcome, test_size=0.3, random_state=42):
+def _get_train_test_split_mort(data, outcome):
     
     # Obtener todos los ids de estancia (stay_id) del diccionario data
     stay_ids = list(data.keys())
 
     # Dividir los stay_ids en conjuntos de entrenamiento y prueba
-    train_stays, test_stays = train_test_split(stay_ids, test_size=test_size, random_state=random_state)
+    train_stays, test_stays = train_test_split(stay_ids, test_size=0.2, random_state=42)
+
+    print(f"{len(train_stays)} patients for retraining mortality model")
 
     # Inicializar matrices para X_train, y_train, X_test, y_test
     X_train = np.ndarray((len(train_stays), 48, 16))
@@ -752,16 +783,19 @@ def retrain_mortality_model(base_path, model_filename, normalizer_name="", retra
     X_train, y_train_v2, X_test, y_test_v2, X_val, y_val, y_val_v2 = \
         _prepare_disch_data(X_train, X_test, y_train, y_test)
 
+    X_val = np.concatenate([X_test, X_val], axis=0)
+    y_val_v2 = np.concatenate([y_test_v2, y_val_v2], axis=0)
+
     if retrain_type=="full":
-        model_lstm = keras.models.load_model(os.path.join(model_path, model_filename), custom_objects={'softmax_temperature': softmax_temperature})
+        model_lstm = keras.models.load_model(os.path.join(model_path, model_filename), custom_objects={'softmax_temperature': softmax_temperature, 'SoftmaxTemperature': SoftmaxTemperature})
 
     elif retrain_type=="dense":
-        model_lstm = keras.models.load_model(os.path.join(model_path, model_filename), custom_objects={'softmax_temperature': softmax_temperature})
+        model_lstm = keras.models.load_model(os.path.join(model_path, model_filename), custom_objects={'softmax_temperature': softmax_temperature, 'SoftmaxTemperature': SoftmaxTemperature})
         # Freeze LSTM layer
         model_lstm.layers[0].trainable = False
 
     elif retrain_type=="lstm":
-        model_lstm = keras.models.load_model(os.path.join(model_path, model_filename), custom_objects={'softmax_temperature': softmax_temperature})
+        model_lstm = keras.models.load_model(os.path.join(model_path, model_filename), custom_objects={'softmax_temperature': softmax_temperature, 'SoftmaxTemperature': SoftmaxTemperature})
         # Freeze all layers except the first one (LSTM layer)
         for layer in model_lstm.layers[1:]:
             layer.trainable = False
@@ -779,8 +813,6 @@ def retrain_mortality_model(base_path, model_filename, normalizer_name="", retra
                             X_val, y_val_v2, epochs=1000, batch_size=100)
 
     model_lstm.save(os.path.join(model_path, 'RETRAINED_' + retrain_type + '_' + model_filename))
-        
-    return {'y_true': y_test_v2, 'y_pred': model_lstm.predict(X_test)}
 
 def retrain_discharge_model(base_path, model_filename, normalizer_name="", retrain_type="full"):
 
@@ -825,16 +857,19 @@ def retrain_discharge_model(base_path, model_filename, normalizer_name="", retra
     X_train, y_train_v2, X_test, y_test_v2, X_val, y_val, y_val_v2 = \
         _prepare_disch_data(X_train, X_test, y_train, y_test)
 
+    X_val = np.concatenate([X_test, X_val], axis=0)
+    y_val_v2 = np.concatenate([y_test_v2, y_val_v2], axis=0)
+
     if retrain_type=="full":
-        model_lstm = keras.models.load_model(os.path.join(model_path, model_filename), custom_objects={'softmax_temperature': softmax_temperature})
+        model_lstm = keras.models.load_model(os.path.join(model_path, model_filename), custom_objects={'softmax_temperature': softmax_temperature, 'SoftmaxTemperature': SoftmaxTemperature})
 
     elif retrain_type=="dense":
-        model_lstm = keras.models.load_model(os.path.join(model_path, model_filename), custom_objects={'softmax_temperature': softmax_temperature})
+        model_lstm = keras.models.load_model(os.path.join(model_path, model_filename), custom_objects={'softmax_temperature': softmax_temperature, 'SoftmaxTemperature': SoftmaxTemperature})
         # Freeze LSTM layer
         model_lstm.layers[0].trainable = False
 
     elif retrain_type=="lstm":
-        model_lstm = keras.models.load_model(os.path.join(model_path, model_filename), custom_objects={'softmax_temperature': softmax_temperature})
+        model_lstm = keras.models.load_model(os.path.join(model_path, model_filename), custom_objects={'softmax_temperature': softmax_temperature, 'SoftmaxTemperature': SoftmaxTemperature})
         # Freeze all layers except the first one (LSTM layer)
         for layer in model_lstm.layers[1:]:
             layer.trainable = False
@@ -847,17 +882,21 @@ def retrain_discharge_model(base_path, model_filename, normalizer_name="", retra
         optimizer=low_lr_optimizer,
         metrics=['accuracy', 'AUC'])
 
-    _fit_and_eval_model_retrain(model_lstm, 'RETRAIN_DISCH', X_train,
+    _fit_and_eval_model_retrain(model_lstm, 'RETRAIN_DISCH', 
+                            X_train,
                             y_train_v2,
-                            X_val, y_val_v2, epochs=1000, batch_size=100)
+                            X_val, 
+                            y_val_v2, 
+                            epochs=1000, 
+                            batch_size=100
+                            )
 
     model_lstm.save(os.path.join(model_path, 'RETRAINED_' + retrain_type + '_' + model_filename))
-        
-    return {'y_true': y_test_v2, 'y_pred': model_lstm.predict(X_test)}
 
 def run_retrain_pipeline(dataset_filename, base_path, normalizer_disch, normalizer_mort, mortality_model_filename, disch_model_filename, retrain_models=False, generate_datasets=False, generate_normalizers=False, retrain_type="full"):
-    
+
     if generate_datasets:
+        generate_train_test_split_file(dataset_filename, base_path)
         check_dataset(dataset_filename, base_path)
         generate_discharge_dataset(base_path, dataset_filename)
         generate_mortality_dataset(base_path, dataset_filename)

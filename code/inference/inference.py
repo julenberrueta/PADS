@@ -322,10 +322,6 @@ def generate_test_dataset(dataset_filename, base_path, test_type="inference"):
 
     data = pd.read_csv(data_path)
 
-    stay_ids = data.stay_id.unique()
-    train_stays, test_stays = train_test_split(stay_ids, test_size=0.3, random_state=42)
-    data = data[data.stay_id.isin(test_stays)]
-
     # lista_pacientes = data.stay_id.unique()
     # data = data[data.stay_id.isin(lista_pacientes[:20])]
 
@@ -335,6 +331,18 @@ def generate_test_dataset(dataset_filename, base_path, test_type="inference"):
     los = data.groupby("stay_id")["hr"].max().to_dict()
     data.loc[:, "los"] = data["stay_id"].map(los)
 
+    with open(os.path.join(data_folder_path, "medians_48h.json"), "r") as f:
+        medians_48h = json.load(f)
+
+    with open(os.path.join(data_folder_path, 'test_stays.txt'), 'r') as f:
+        test_stays = [int(line.strip()) for line in f]
+
+    data = data[data.stay_id.isin(test_stays)]
+
+    data = correct_outliers(data)
+    data = impute_first_row(data, medians_48h)
+    data = apply_nan_rules(data, NAN_RULES)
+
     fixed_cols = ["stay_id"]
     time_column = "hr"
     data = data[(data["los"] >= N_TIME_OFFSETS)].copy()
@@ -342,12 +350,6 @@ def generate_test_dataset(dataset_filename, base_path, test_type="inference"):
     data.loc[data["hr"] >= data["los"] - (N_TIME_OFFSETS - 1), "disch_48h"] = 1
     stays_to_process = set(data["stay_id"])
 
-    with open(os.path.join(data_folder_path, "medians_48h.json"), "r") as f:
-        medians_48h = json.load(f)
-
-    data = correct_outliers(data)
-    data = impute_first_row(data, medians_48h)
-    data = apply_nan_rules(data, NAN_RULES)
     all_data = []
     if PARALLEL:
         with tqdm_joblib(tqdm(desc="Process df", total=len(stays_to_process))):
@@ -580,7 +582,7 @@ def _plot_roc(base_path, image_name, groundtruth, predictions, **kwargs):
     # Plot ROC
     plt.figure(figsize=(6, 6))
     plt.plot(100 * fp, 100 * tp, label=f'AUC = {auc:.2f}', linewidth=2, **kwargs)
-    plt.scatter(100 * optimal_fp, 100 * optimal_tp, color='blue', label=f'Optimal threshold = {optimal_thresh:.4f}', zorder=5)
+    plt.scatter(100 * optimal_fp, 100 * optimal_tp, color='blue', label=f'Optimal threshold = {optimal_thresh:.6f}', zorder=5)
     plt.xlabel('False positives [%]')
     plt.ylabel('True positives [%]')
     plt.xlim([0, 100])
