@@ -64,19 +64,25 @@ The variables used by PADS are the following:
 |los| days | 2 - 375 | The lower bound is limited due to the requirements of the model|
 
 
-## How to run the scripts
+## Create a Virtual Environment
 
-Create a virtualenv:
+Create a virtual environment with name <virtual_env_name>:
 
-`python -m venv <virtual_env_name>`
+```bash
+python -m venv <virtual_env_name>
+```
 
-Activate the virtualenv:
+Activate the virtual environment:
 
-`<virtual_env_name>\Scripts\activate`
+```bash
+<virtual_env_name>\Scripts\activate
+```
 
 Install required libraries:
 
-`pip install -r code/requirements.txt`
+```bash
+pip install -r code/requirements.txt
+```
 
 Create a folder for the data:
 
@@ -85,62 +91,83 @@ mkdir ./data
 ```
 
 ```bash
-mkdir -p ./results/images/{inference,first_48h,last_48h,last_96h}
+mkdir -p ./results/images/inference
+mkdir -p ./results/images/first_48h
+mkdir -p ./results/images/last_48h
+mkdir -p ./results/images/last_96h
 ```
 
-```bash
-mkdir -p ./results/{retrained_zero,retrained_full,retrained_dense,retrained_lstm,retrained_base}
+## Run Pipelines
+
+Use the following command to run all the pipelines (you only need to change the `--mode` argument). It is recommended to run the script from the root directory of the project:
+
+```python
+python -m code.code_v2 --csv_filename <data_filename> --mode <mode_type>
 ```
+
+### 🔹 Arguments
+
+- `--csv_filename <data_filename>`  
+  Path to the input `.csv` file. The file must be located in the `data/` folder.
+
+- `--mode <mode_type>`  
+  Specifies the operation mode. Choose one of the following:
+
+### 🔧 Mode Types
+
+| Mode                    | Description                                                                 |
+|-------------------------|-----------------------------------------------------------------------------|
+| `generate_files`        | Generates essential intermediate files used in subsequent steps.            |
+| `generate_retrain_data` | Prepares and saves model-ready data (`.pkl`) for mortality and discharge model retraining. |
+| `retrain_models`        | Retrains the mortality and discharge models using preprocessed data.        |
+| `inference`             | Runs inference, and generates AUC-ROC and error plots.                      |
 
 ---
 
-### Run retraining pipeline
+### ⚙️ Customizable Parameters in `code_v2.py`
 
-To generate datasets, normalizers, and retrain models:
+At the bottom of the `code_v2.py` script, you can modify the following parameters to tailor the pipeline:
 
-```bash
-python -m code.retrain.retrain <data_filename> --retrain_models --generate_datasets --generate_normalizers --retrain_type <retrain_type>
-```
+- **BASE_PATH**
 
-Where `<retrain_type>` can be:
-- `zero` (**train** a model from scrach, with randomized initialized weights)
-- `lstm` (**retrain** LSTM neurons from the weights of the lstm_discharge_model.keras modell)
-- `dense` (**retrain** DENSE neurons from the weights of the lstm_discharge_model.keras modell)
-- `full` (**retrain** ALL the neurons from the weights of the lstm_discharge_model.keras modell)
+  - The root path of the project. You usually don't need to change this as long as you run the script from the project's root directory.
 
+- **MORT_NORMALIZER**
 
-This pipeline allows you to:
+  - The filename of the normalizer used for the mortality model during retraining and evaluation. 
+    - Default: `mimic_iv_normalizer.pkl`. 
+    - Custom: `custom_normalizer.pkl` (generated with `--mode generate_files`)
 
-- Retrain discharge and mortality models.
-- Generate the **datasets** needed for training.
-- Generate the **normalizers** used by the model.
-- **Retrain** models from scratch using the specified retrain type.
+- **DISCH_NORMALIZER**
 
----
+  - The filename of the normalizer used for the discharge model. 
+    - Default: `mimic_iv_normalizer_disch.pkl`.
+    - Custom: `custom_normalizer_disch.pkl` (generated with `--mode generate_files`)
 
-### Run inference pipeline
+- **RETRAIN_TYPE** Defines the retraining strategy. Options include:
+  - `zero`: **Train** models from scratch (randomly initialized weights).
+  - `full`: Retrain the entire model.
+  - `dense`: Retrain dense layers.
+  - `lstm`: Retrain the LSTM layers.
 
-To run inference and generate evaluation plots:
+- **RETRAIN_MORT_MODEL**: 
+  - Name of the mortality model file that will be retrained.
+    - Default: `lstm_mortality_model.keras`.
 
-```bash
-python -m code.inference.inference <data_filename> --test_type <test_type>
-```
+- **RETRAIN_DISCH_MODEL**:
+  - Name of the discharge model file that will be retrained.
+    - Default: `lstm_discharge_model.keras`.
 
-Where `<test_type>` can be:
-- `inference` (entire ICU stay)
-- `first_48h`
-- `last_48h`
-- `last_96h`
+- **INFERENCE_MORT_MODEL**:
+  - Name of the retrained mortality model to be used in inference mode.
+    - Example: `RETRAINED_zero_lstm_mortality_model.keras`.
 
-This pipeline allows you to:
+- **INFERENCE_DISCH_MODEL**: 
+  - Name of the retrained discharge model to be used in inference mode. 
+    - Example: `RETRAINED_zero_lstm_discharge_model.keras`.
 
-- Generate **ROC-AUC curves plots** to evaluate model performance:
-- Generate **inference prediction plots**, showing predicted values alongside actual patient outcomes.
-
-All these charts can be done across different time segments:
-  - **Entire ICU stay**
-  - **First 48 hours**
-  - **Last 48 hours**
-  - **Last 96 hours**
-
----
+- **TEST_TYPE**: Specifies which part of the data is used during inference. Options include:
+  - `inference`: Uses the full stay.
+  - `last_48h`: Uses the last 48 hours of data.
+  - `last_98h`: Uses the last 98 hours.
+  - `first_48h`: Uses the first 48 hours.
