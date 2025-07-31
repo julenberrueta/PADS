@@ -163,7 +163,12 @@ cython_debug/
 **/.DS_Store
 
 # Data
-data/
-models/
+data/*
+!data/synthetic_dataset.csv
+models/*
+!models/lstm_discharge_model.keras
+!models/lstm_mortality_model.keras
+normalizers/*
+!normalizers/mimic_iv_normalizer.pkl
+!normalizers/mimic_iv_normalizer_disch.pkl
 results/
-normalizers/custom_normalizer*
