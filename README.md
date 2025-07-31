@@ -105,6 +105,15 @@ Use the following command to run all the pipelines (you only need to change the 
 python -m code.code_v2 --csv_filename <data_filename> --mode <mode_type>
 ```
 
+Complete run example with `synthetic_dataset.csv`:
+
+```python
+python -m code.code_v2 --csv_filename synthetic_dataset.csv --mode generate_files
+python -m code.code_v2 --csv_filename synthetic_dataset.csv --mode generate_retrain_data
+python -m code.code_v2 --csv_filename synthetic_dataset.csv --mode retrain_models
+python -m code.code_v2 --csv_filename synthetic_dataset.csv --mode inference
+```
+
 ### 🔹 Arguments
 
 - `--csv_filename <data_filename>`  
@@ -117,10 +126,10 @@ python -m code.code_v2 --csv_filename <data_filename> --mode <mode_type>
 
 | Mode                    | Description                                                                 |
 |-------------------------|-----------------------------------------------------------------------------|
-| `generate_files`        | Generates essential intermediate files used in subsequent steps.            |
-| `generate_retrain_data` | Prepares and saves model-ready data (`.pkl`) for mortality and discharge model retraining. |
-| `retrain_models`        | Retrains the mortality and discharge models using preprocessed data.        |
-| `inference`             | Runs inference, and generates AUC-ROC and error plots.                      |
+| 1. `generate_files`        | Generates essential intermediate files used in subsequent steps.            |
+| 2. `generate_retrain_data` | Prepares and saves model-ready data (`.pkl`) for mortality and discharge model retraining. |
+| 3. `retrain_models`        | Retrains the mortality and discharge models using preprocessed data.        |
+| 4. `inference`             | Runs inference, and generates AUC-ROC and error plots.                      |
 
 ---
 

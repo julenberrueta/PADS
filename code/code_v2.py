@@ -1865,7 +1865,7 @@ MORT_NORMALIZER='mimic_iv_normalizer.pkl' # custom_normalizer.pkl
 DISCH_NORMALIZER='mimic_iv_normalizer_disch.pkl' # custom_normalizer_disch.pkl
 
 # retrain type (zero, full, dense, lstm)
-RETRAIN_TYPE='zero'
+RETRAIN_TYPE='full'
 
 # models name that we want to retrain
 RETRAIN_MORT_MODEL='lstm_mortality_model.keras'
