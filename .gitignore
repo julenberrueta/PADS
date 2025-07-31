@@ -166,7 +166,7 @@ cython_debug/
 data/*
 !data/synthetic_dataset.csv
 models/*
-!models/lstm_discharge_model.keras
+!models/lstm_disch_model.keras
 !models/lstm_mortality_model.keras
 normalizers/*
 !normalizers/mimic_iv_normalizer.pkl
