@@ -1872,8 +1872,8 @@ RETRAIN_MORT_MODEL='lstm_mortality_model.keras'
 RETRAIN_DISCH_MODEL='lstm_disch_model.keras'
 
 # models that we want to evaluate in inference mode
-INFERENCE_MORT_MODEL='RETRAINED_zero_lstm_mortality_model.keras'
-INFERENCE_DISCH_MODEL='RETRAINED_zero_lstm_disch_model.keras'
+INFERENCE_MORT_MODEL='RETRAINED_full_lstm_mortality_model.keras'
+INFERENCE_DISCH_MODEL='RETRAINED_full_lstm_disch_model.keras'
 
 # inference type (inference, last_48h, last_98h, first_48h)
 TEST_TYPE='inference'
