@@ -84,19 +84,6 @@ Install required libraries:
 pip install -r code/requirements.txt
 ```
 
-Create a folder for the data:
-
-```bash
-mkdir ./data
-```
-
-```bash
-mkdir -p ./results/images/inference
-mkdir -p ./results/images/first_48h
-mkdir -p ./results/images/last_48h
-mkdir -p ./results/images/last_96h
-```
-
 ## Run Pipelines
 
 Use the following command to run all the pipelines (you only need to change the `--mode` argument). It is recommended to run the script from the root directory of the project:
@@ -111,6 +98,7 @@ Complete run example with `synthetic_dataset.csv`:
 python -m code.code_v2 --csv_filename synthetic_dataset.csv --mode generate_files
 python -m code.code_v2 --csv_filename synthetic_dataset.csv --mode generate_retrain_data
 python -m code.code_v2 --csv_filename synthetic_dataset.csv --mode retrain_models
+python -m code.code_v2 --csv_filename synthetic_dataset.csv --mode calculate_metrics
 python -m code.code_v2 --csv_filename synthetic_dataset.csv --mode inference
 ```
 
@@ -126,10 +114,11 @@ python -m code.code_v2 --csv_filename synthetic_dataset.csv --mode inference
 
 | Mode                    | Description                                                                 |
 |-------------------------|-----------------------------------------------------------------------------|
-| 1. `generate_files`        | Generates essential intermediate files used in subsequent steps.            |
-| 2. `generate_retrain_data` | Prepares and saves model-ready data (`.pkl`) for mortality and discharge model retraining. |
-| 3. `retrain_models`        | Retrains the mortality and discharge models using preprocessed data.        |
-| 4. `inference`             | Runs inference, and generates AUC-ROC and error plots.                      |
+| `generate_files`        | Generates essential intermediate files used in subsequent steps.            |
+| `generate_retrain_data` | Prepares and saves model-ready data (`.pkl`) for mortality and discharge model retraining. |
+| `retrain_models`        | Retrains the mortality and discharge models using preprocessed data.        |
+| `calculate_metrics`        | Determines optimal thresholds and generates AUC-ROC curves, error plot and confusion matrix plot.        |
+| `inference`             | Generates inference plots.                    |
 
 ---
 
@@ -176,7 +165,7 @@ At the bottom of the `code_v2.py` script, you can modify the following parameter
     - Example: `RETRAINED_zero_lstm_discharge_model.keras`.
 
 - **TEST_TYPE**: Specifies which part of the data is used during inference. Options include:
-  - `inference`: Uses the full stay.
+  - `full`: Uses the full stay.
   - `last_48h`: Uses the last 48 hours of data.
   - `last_98h`: Uses the last 98 hours.
   - `first_48h`: Uses the first 48 hours.

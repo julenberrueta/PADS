@@ -24,7 +24,7 @@ from scipy.stats import gaussian_kde
 from sklearn.metrics import (
     accuracy_score, classification_report, confusion_matrix,
     ConfusionMatrixDisplay, f1_score, precision_score, recall_score,
-    roc_auc_score, roc_curve
+    roc_auc_score, roc_curve, precision_recall_curve
 )
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import MinMaxScaler
@@ -138,7 +138,7 @@ def check_dataset(base_path: str, dataset_filename: str):
     if not os.path.isfile(data_path):
         print(f"Error: The file '{data_path}' does not exist.")
     else:
-        df = pd.read_csv(data_path, index_col=0)
+        df = pd.read_csv(data_path)
 
         for c in MANDATORY_COLUMNS:
             assert c in df.columns, f"Column {c} is mandatory."
@@ -163,7 +163,7 @@ def _get_data(base_path: str, dataset_filename: str) -> pd.DataFrame:
 
     data_folder_path = os.path.join(base_path, "data")
     data_path = os.path.join(data_folder_path, dataset_filename)
-    data = pd.read_csv(data_path, index_col=0)
+    data = pd.read_csv(data_path)
     data.loc[:, "outcome"] = data["icu_expire_flag"]
 
     los = data.groupby("stay_id")["hr"].max().to_dict()
@@ -600,7 +600,6 @@ def _create_lstm_disch_model(input_shape: Tuple[int, int, int]) -> keras.Model:
 
     model = keras.Sequential()
     model.add(keras.layers.LSTM(units=50, input_shape=input_shape[1:]))
-
     model.add(keras.layers.Dense(50, activation="relu"))
     model.add(keras.layers.BatchNormalization())
     model.add(keras.layers.Dropout(0.3))
@@ -766,45 +765,62 @@ def _plot_roc(base_path, image_name, groundtruth, predictions, **kwargs):
 
     return optimal_thresh
 
-def _plot_roc_combined(base_path, test_type,
+def _get_optimal_threshold(method, y_true, y_pred):
+    fp, tp, thresholds = roc_curve(y_true, y_pred)
+
+    if method == 'youden':
+        j_scores = tp - fp
+        idx = np.argmax(j_scores)
+    elif method == 'min_distance':
+        distances = np.sqrt(fp**2 + (1 - tp)**2)
+        idx = np.argmin(distances)
+    elif method == 'precision_recall':
+        precision, recall, pr_thresholds = precision_recall_curve(y_true, y_pred)
+        fscore = 2 * precision * recall / (precision + recall + 1e-8)
+        idx = np.argmax(fscore)
+        return pr_thresholds[idx]
+    else:
+        raise ValueError(f"Unknown threshold_method: {method}")
+
+    return thresholds[idx]
+
+def _plot_roc_combined(base_path,
                        mortality_pred, mortality_groundtruth,
-                       discharge_pred, discharge_groundtruth, **kwargs):
+                       discharge_pred, discharge_groundtruth,
+                       threshold_method='youden', save=True, **kwargs):
 
-    results_path = os.path.join(base_path, "results")
-    os.makedirs(results_path, exist_ok=True)
+    save_folder = os.path.join(base_path, "results", "images")
+    os.makedirs(save_folder, exist_ok=True)
 
-    # --- Mortality Metrics ---
-    fp_mort, tp_mort, thresholds_mort = roc_curve(mortality_groundtruth, mortality_pred)
+    # --- Mortality ---
     auc_mort = roc_auc_score(mortality_groundtruth, mortality_pred)
-
-    # Youden's J
-    j_mort = tp_mort - fp_mort
-    j_idx_mort = np.argmax(j_mort)
-    optimal_thresh_mort = thresholds_mort[j_idx_mort]
-    opt_fp_mort = fp_mort[j_idx_mort]
-    opt_tp_mort = tp_mort[j_idx_mort]
-
+    fp_mort, tp_mort, thresholds_mort = roc_curve(mortality_groundtruth, mortality_pred)
+    optimal_thresh_mort = _get_optimal_threshold(threshold_method, mortality_groundtruth, mortality_pred)
     bin_mort = (mortality_pred >= optimal_thresh_mort).astype(int)
+
     acc_mort = accuracy_score(mortality_groundtruth, bin_mort)
     prec_mort = precision_score(mortality_groundtruth, bin_mort, zero_division=0)
     rec_mort = recall_score(mortality_groundtruth, bin_mort, zero_division=0)
     f1_mort = f1_score(mortality_groundtruth, bin_mort, zero_division=0)
 
-    # --- Discharge Metrics ---
-    fp_disch, tp_disch, thresholds_disch = roc_curve(discharge_groundtruth, discharge_pred)
+    opt_idx_mort = np.argmin(np.abs(thresholds_mort - optimal_thresh_mort))
+    opt_fp_mort = fp_mort[opt_idx_mort]
+    opt_tp_mort = tp_mort[opt_idx_mort]
+
+    # --- Discharge ---
     auc_disch = roc_auc_score(discharge_groundtruth, discharge_pred)
-
-    j_disch = tp_disch - fp_disch
-    j_idx_disch = np.argmax(j_disch)
-    optimal_thresh_disch = thresholds_disch[j_idx_disch]
-    opt_fp_disch = fp_disch[j_idx_disch]
-    opt_tp_disch = tp_disch[j_idx_disch]
-
+    fp_disch, tp_disch, thresholds_disch = roc_curve(discharge_groundtruth, discharge_pred)
+    optimal_thresh_disch = _get_optimal_threshold(threshold_method, discharge_groundtruth, discharge_pred)
     bin_disch = (discharge_pred >= optimal_thresh_disch).astype(int)
+
     acc_disch = accuracy_score(discharge_groundtruth, bin_disch)
     prec_disch = precision_score(discharge_groundtruth, bin_disch, zero_division=0)
     rec_disch = recall_score(discharge_groundtruth, bin_disch, zero_division=0)
     f1_disch = f1_score(discharge_groundtruth, bin_disch, zero_division=0)
+
+    opt_idx_disch = np.argmin(np.abs(thresholds_disch - optimal_thresh_disch))
+    opt_fp_disch = fp_disch[opt_idx_disch]
+    opt_tp_disch = tp_disch[opt_idx_disch]
 
     # --- Plot ---
     fig, ax = plt.subplots(figsize=(9, 8))
@@ -817,17 +833,16 @@ def _plot_roc_combined(base_path, test_type,
             label=f'Discharge (AUC = {auc_disch:.2f})')
     ax.scatter(100 * opt_fp_disch, 100 * opt_tp_disch, color='#298fcf', edgecolor='black', zorder=5)
 
-    ax.set_title("ROC Curve - Mortality & Discharge", fontsize=14, fontweight='bold')
+    ax.set_title(f"ROC Curve - Mortality & Discharge\nThreshold Method: {threshold_method}", fontsize=14, fontweight='bold')
     ax.set_xlabel('False Positives [%]')
     ax.set_ylabel('True Positives [%]')
     ax.set_xlim([0, 100])
     ax.set_ylim([0, 100])
     ax.grid(True)
     ax.set_aspect('equal')
-
     ax.legend(loc='center right', fontsize=10)
 
-    # --- Metrics Table (below plot) ---
+    # --- Metrics Table ---
     metrics_text = (
         "           Accuracy  Precision  Recall  F1 Score  AUC  Threshold\n"
         f"Mortality  {acc_mort:8.2f}  {prec_mort:9.2f}  {rec_mort:6.2f}  {f1_mort:8.2f}  {auc_mort:4.2f}  {optimal_thresh_mort:.4f}\n"
@@ -839,7 +854,8 @@ def _plot_roc_combined(base_path, test_type,
              bbox=dict(facecolor='#f0f0f0', edgecolor='gray'))
 
     plt.tight_layout(rect=[0, 0.05, 1, 1])
-    plt.savefig(os.path.join(results_path, f"roc_combined_{test_type}.png"), bbox_inches='tight')
+    if save == True:
+        plt.savefig(os.path.join(save_folder, f"roc_combined.png"), bbox_inches='tight')
     plt.close()
 
     return optimal_thresh_mort, optimal_thresh_disch
@@ -852,7 +868,6 @@ def _plot_inference(df_prob, base_path, test_type="last_96h", save=False):
     """
 
     save_folder = os.path.join(base_path, "results", "images")
-    os.makedirs(save_folder, exist_ok=True)
 
     for stay_id, group_df in df_prob.groupby("stay_id"):
         plt.figure(figsize=(10, 5))
@@ -894,9 +909,9 @@ def _plot_inference(df_prob, base_path, test_type="last_96h", save=False):
         else:
             plt.show()
 
-def _plot_error(df: pd.DataFrame, base_path: str, test_type):
+def _plot_error(df: pd.DataFrame, base_path: str):
     
-    results_path = os.path.join(base_path, "results")
+    save_folder = os.path.join(base_path, "results", "images")
     
     color_map = {
         0.0: 'lightgreen',
@@ -927,7 +942,7 @@ def _plot_error(df: pd.DataFrame, base_path: str, test_type):
     plt.text(2.4, 0.55, f'Mean Error: {mean_error:.6f}', fontsize=10, ha='left')
 
     plt.xlim(-0.5, len(bar_data) - 0.5)
-    plt.savefig(os.path.join(results_path, f"barplot_error_{test_type}.png"))
+    plt.savefig(os.path.join(save_folder, f"barplot_error.png"))
     plt.close()
 
     plot_data = df.groupby(['real_color_group','color_group','error']).size().reset_index()
@@ -972,7 +987,7 @@ def _plot_error(df: pd.DataFrame, base_path: str, test_type):
     ax.grid(False)
 
     plt.subplots_adjust(left=0.1, right=0.9, top=0.9, bottom=0.1)
-    plt.savefig(os.path.join(results_path, f"heatmap_error_{test_type}.png"))
+    plt.savefig(os.path.join(save_folder, f"heatmap_error.png"))
     plt.close()
 
 def generate_medians_json(base_path: str, dataset_filename: str):
@@ -1109,7 +1124,7 @@ def generate_mortality_normalizer(base_path: str, dataset: dict):
         X,
         load=False,
         save=True,
-        filename="custom_normalizer_mort.pkl",
+        filename="custom_normalizer.pkl",
     )
 
 def generate_discharge_normalizer(base_path: str, dataset: dict):
@@ -1126,7 +1141,7 @@ def generate_discharge_normalizer(base_path: str, dataset: dict):
         filename="custom_normalizer_disch.pkl",
     )
 
-def generate_retrain_mortality_dataset(base_path: str, dataset_filename: str):
+def generate_retrain_mortality_dataset(base_path: str, dataset_filename: str, data_type: str):
     """
     Generates and saves datasets for mortality prediction from ICU stay data.
     This function processes ICU stay data to create datasets suitable for LSTM-based mortality prediction.
@@ -1135,11 +1150,10 @@ def generate_retrain_mortality_dataset(base_path: str, dataset_filename: str):
     Args:
         base_path (str): The base directory path where input data is located and output files will be saved.
     Saves:
-        - mimic_iv_lstm_48h.pkl: Dictionary mapping stay_id to processed time-series data for each stay.
-        - mimic_iv_lstm_last_48h.pkl: Dictionary mapping stay_id to the last 48 hours of data for each stay.
-        - mimic_iv_outcome.pkl: Dictionary mapping stay_id to outcome label.
-        - mimic_iv_icu_expire_flag.pkl: Dictionary mapping stay_id to ICU expire flag.
-        - mimic_iv_hospital_expire_flag.pkl: Dictionary mapping stay_id to hospital expire flag.
+        - lstm_last_48h_train.pkl: Dictionary mapping stay_id to the last 48 hours of data for each stay.
+        - icu_expire_flag_train.pkl: Dictionary mapping stay_id to ICU expire flag.
+        - lstm_last_48h_test.pkl: Dictionary mapping stay_id to the last 48 hours of data for each stay.
+        - icu_expire_flag_test.pkl: Dictionary mapping stay_id to ICU expire flag.
     Prints:
         - The total number of stays with sufficient data processed.
     Note:
@@ -1153,10 +1167,15 @@ def generate_retrain_mortality_dataset(base_path: str, dataset_filename: str):
     with open(os.path.join(data_folder_path, "medians_48h.json"), "r") as f:
         medians_48h = json.load(f)
 
-    with open(os.path.join(data_folder_path, 'train_stays.txt'), 'r') as f:
-        train_stays = [int(line.strip()) for line in f]
+    if data_type == "train":
+        with open(os.path.join(data_folder_path, 'train_stays.txt'), 'r') as f:
+            stays = [int(line.strip()) for line in f]
 
-    data = data[data.stay_id.isin(train_stays)]
+    elif data_type == "test":
+        with open(os.path.join(data_folder_path, 'test_stays.txt'), 'r') as f:
+            stays = [int(line.strip()) for line in f]
+
+    data = data[data.stay_id.isin(stays)]
 
     data = _correct_outliers(data)
     data = _impute_first_row(data, medians_48h)
@@ -1198,21 +1217,23 @@ def generate_retrain_mortality_dataset(base_path: str, dataset_filename: str):
 
     all_data = dict(all_data)
     last_48h = dict(last_48h)
+    outcomes = data[["stay_id", "icu_expire_flag"]].drop_duplicates().set_index("stay_id")["icu_expire_flag"].to_dict()
 
     print("Total stays with >={}h of data: {}.".format(N_TIME_OFFSETS, len(stays_to_process)))
-    with open(os.path.join(data_folder_path, "lstm_48h.pkl"), "wb") as fp:
-        pickle.dump(all_data, fp)
-    with open(os.path.join(data_folder_path, "lstm_last_48h.pkl"), "wb") as fp:
-        pickle.dump(last_48h, fp)
 
-    outcomes = data[["stay_id", "outcome"]].drop_duplicates().set_index("stay_id")["outcome"].to_dict()
-    with open(os.path.join(data_folder_path, "outcome.pkl"), "wb") as fp:
-        pickle.dump(outcomes, fp)
-    outcomes = data[["stay_id", "icu_expire_flag"]].drop_duplicates().set_index("stay_id")["icu_expire_flag"].to_dict()
-    with open(os.path.join(data_folder_path, "icu_expire_flag.pkl"), "wb") as fp:
-        pickle.dump(outcomes, fp)
+    if data_type == "train":
+        with open(os.path.join(data_folder_path, "lstm_last_48h_train.pkl"), "wb") as fp:
+            pickle.dump(last_48h, fp)
+        with open(os.path.join(data_folder_path, "icu_expire_flag_train.pkl"), "wb") as fp:
+            pickle.dump(outcomes, fp)
 
-def generate_retrain_discharge_dataset(base_path: str, dataset_filename: str):
+    elif data_type == "test":
+        with open(os.path.join(data_folder_path, "lstm_last_48h_test.pkl"), "wb") as fp:
+            pickle.dump(last_48h, fp)
+        with open(os.path.join(data_folder_path, "icu_expire_flag_test.pkl"), "wb") as fp:
+            pickle.dump(outcomes, fp)
+
+def generate_retrain_discharge_dataset(base_path: str, dataset_filename: str, data_type: str):
     """
     Generates and saves discharge prediction datasets for patients based on their length of stay (LOS) and other features.
     This function processes patient data to create a dataset for predicting discharge within the next 48 hours.
@@ -1221,8 +1242,10 @@ def generate_retrain_discharge_dataset(base_path: str, dataset_filename: str):
     Args:
         base_path (str): The directory path where the input data is located and output files will be saved.
     Saves:
-        mimic_iv_lstm_disch_3point_48h.pkl: Pickled dataset for LSTM discharge prediction.
-        mimic_iv_outcome_disch_3point_48h.pkl: Pickled outcomes for discharge prediction.
+        lstm_disch_3point_48h_train.pkl: Pickled dataset for LSTM discharge prediction retrain.
+        outcome_disch_3point_48h_train.pkl: Pickled outcomes for discharge prediction retrain.
+        lstm_disch_3point_48h_test.pkl: Pickled dataset for LSTM discharge prediction test.
+        outcome_disch_3point_48h_test.pkl: Pickled outcomes for discharge prediction test.
     """
 
     data_folder_path = os.path.join(base_path, "data")
@@ -1231,10 +1254,15 @@ def generate_retrain_discharge_dataset(base_path: str, dataset_filename: str):
     with open(os.path.join(data_folder_path, "medians_48h.json"), "r") as f:
         medians_48h = json.load(f)
 
-    with open(os.path.join(data_folder_path, 'train_stays.txt'), 'r') as f:
-        train_stays = [int(line.strip()) for line in f]
+    if data_type == "train":
+        with open(os.path.join(data_folder_path, 'train_stays.txt'), 'r') as f:
+            stays = [int(line.strip()) for line in f]
 
-    data = data[data.stay_id.isin(train_stays)]
+    elif data_type == "test":
+        with open(os.path.join(data_folder_path, 'test_stays.txt'), 'r') as f:
+            stays = [int(line.strip()) for line in f]
+
+    data = data[data.stay_id.isin(stays)]
 
     data = _correct_outliers(data)
     data = _impute_first_row(data, medians_48h)
@@ -1245,24 +1273,32 @@ def generate_retrain_discharge_dataset(base_path: str, dataset_filename: str):
     data.loc[:, "disch_48h"] = 0
     data.loc[data["hr"] >= data["los"] - 47, "disch_48h"] = 1
 
-    all_data, outcomes = _process_discharge_dataset(data)
-    with open(os.path.join(data_folder_path, "lstm_disch_3point_48h.pkl"), "wb") as fp:
-        pickle.dump(all_data, fp)
-    with open(os.path.join(data_folder_path, "outcome_disch_3point_48h.pkl"), "wb") as fp:
-        pickle.dump(outcomes, fp)
+    if data_type == "train":
+        all_data, outcomes = _process_discharge_dataset(data)
+        with open(os.path.join(data_folder_path, "lstm_disch_3point_48h_train.pkl"), "wb") as fp:
+            pickle.dump(all_data, fp)
+        with open(os.path.join(data_folder_path, "outcome_disch_3point_48h_train.pkl"), "wb") as fp:
+            pickle.dump(outcomes, fp)
+
+    elif data_type == "test":
+        all_data, outcomes = _process_discharge_dataset(data)
+        with open(os.path.join(data_folder_path, "lstm_disch_3point_48h_test.pkl"), "wb") as fp:
+            pickle.dump(all_data, fp)
+        with open(os.path.join(data_folder_path, "outcome_disch_3point_48h_test.pkl"), "wb") as fp:
+            pickle.dump(outcomes, fp)
 
 def retrain_mortality_model(base_path: str, model_filename: str, normalizer_name: Optional[str] = "", retrain_type: Optional[str] = "full"):
     
     model_path = os.path.join(base_path, "models")
     results_path = os.path.join(base_path, "results")
     data_folder_path = os.path.join(base_path, "data")
-    normalizer_path = os.path.join(base_path, "normalizers")
+    normalizer_folder_path = os.path.join(base_path, "normalizers")
 
     try:
-        with open(os.path.join(data_folder_path, "lstm_last_48h.pkl"), "rb") as fp:
+        with open(os.path.join(data_folder_path, "lstm_last_48h_train.pkl"), "rb") as fp:
             data = pickle.load(fp)
 
-        with open(os.path.join(data_folder_path, "icu_expire_flag.pkl"), "rb") as fp:
+        with open(os.path.join(data_folder_path, "icu_expire_flag_train.pkl"), "rb") as fp:
             outcome = pickle.load(fp)
 
     except (FileNotFoundError, pickle.UnpicklingError) as e:
@@ -1274,7 +1310,7 @@ def retrain_mortality_model(base_path: str, model_filename: str, normalizer_name
     X_train, X_test, y_train, y_test =_get_retrain_test_split_mort(data, outcome)
     X_train = \
         _normalize(
-            normalizer_path,
+            normalizer_folder_path,
             X_train,
             load=True,
             save=False,
@@ -1283,7 +1319,7 @@ def retrain_mortality_model(base_path: str, model_filename: str, normalizer_name
         )
     X_test = \
         _normalize(
-            normalizer_path,
+            normalizer_folder_path,
             X_test,
             load=True,
             save=False,
@@ -1349,13 +1385,13 @@ def retrain_discharge_model(base_path: str, model_filename: str, normalizer_name
     model_path = os.path.join(base_path, "models")
     results_path = os.path.join(base_path, "results")
     data_folder_path = os.path.join(base_path, "data")
-    normalizer_path = os.path.join(base_path, "normalizers")
+    normalizer_folder_path = os.path.join(base_path, "normalizers")
     
     try:
-        with open(os.path.join(data_folder_path, "lstm_disch_3point_48h.pkl"), "rb") as fp:
+        with open(os.path.join(data_folder_path, "lstm_disch_3point_48h_train.pkl"), "rb") as fp:
             data = pickle.load(fp)
 
-        with open(os.path.join(data_folder_path, "outcome_disch_3point_48h.pkl"), "rb") as fp:
+        with open(os.path.join(data_folder_path, "outcome_disch_3point_48h_train.pkl"), "rb") as fp:
             outcome = pickle.load(fp)
 
     except (FileNotFoundError, pickle.UnpicklingError) as e:
@@ -1367,7 +1403,7 @@ def retrain_discharge_model(base_path: str, model_filename: str, normalizer_name
     X_train, X_test, y_train, y_test =_get_retrain_test_split_disch(data, outcome)
     X_train = \
         _normalize(
-            normalizer_path,
+            normalizer_folder_path,
             X_train,
             load=True,
             save=False,
@@ -1376,7 +1412,7 @@ def retrain_discharge_model(base_path: str, model_filename: str, normalizer_name
         )
     X_test = \
         _normalize(
-            normalizer_path,
+            normalizer_folder_path,
             X_test,
             load=True,
             save=False,
@@ -1437,7 +1473,7 @@ def retrain_discharge_model(base_path: str, model_filename: str, normalizer_name
 
     model_lstm.save(os.path.join(model_path, 'RETRAINED_' + retrain_type + '_' + model_filename))
 
-def generate_test_dataset(base_path: str, dataset_filename: str, test_type: Optional[str] = "inference"):
+def generate_inference_dataset(base_path: str, dataset_filename: str, test_type: Optional[str] = "inference"):
     """
     Generates a processed test dataset for ICU stay prediction tasks.
     This function reads a dataset from the specified path, processes each ICU stay by applying outlier correction,
@@ -1538,6 +1574,48 @@ def generate_test_dataset(base_path: str, dataset_filename: str, test_type: Opti
         "disch_outcome": disch_outcomes,
     }
 
+def get_test_dataset(base_path: str, normalizer_filename: str, data_type: str):
+
+    data_folder_path = os.path.join(base_path, "data")
+
+    if data_type == "mortality":
+        try:
+            with open(os.path.join(data_folder_path, "lstm_disch_3point_48h_test.pkl"), "rb") as fp:
+                data = pickle.load(fp)
+
+            with open(os.path.join(data_folder_path, "icu_expire_flag_test.pkl"), "rb") as fp:
+                outcome = pickle.load(fp)
+
+            return {
+                "data": data,
+                "mortality_outcome": outcome,
+            }
+
+        except (FileNotFoundError, pickle.UnpicklingError) as e:
+            print(f" Error loading dataset files: {e}", file=sys.stderr)
+            print(" Please run the retraining pipeline to generate the datasets:", file=sys.stderr)
+            print("   python -m code.retrain.retrain <dataset_filename> --generate_datasets", file=sys.stderr)
+            sys.exit(1)
+
+    if data_type == "discharge":
+        try:
+            with open(os.path.join(data_folder_path, "lstm_disch_3point_48h_test.pkl"), "rb") as fp:
+                data = pickle.load(fp)
+
+            with open(os.path.join(data_folder_path, "outcome_disch_3point_48h_test.pkl"), "rb") as fp:
+                outcome = pickle.load(fp)
+
+            return {
+                "data": data,
+                "disch_outcome": outcome,
+            }
+
+        except (FileNotFoundError, pickle.UnpicklingError) as e:
+            print(f" Error loading dataset files: {e}", file=sys.stderr)
+            print(" Please run the retraining pipeline to generate the datasets:", file=sys.stderr)
+            print("   python -m code.retrain.retrain <dataset_filename> --generate_datasets", file=sys.stderr)
+            sys.exit(1)
+
 def generate_production_dataset(base_path: str, dataset_filename: str):
     """
     Generates a processed test dataset for ICU stay prediction tasks.
@@ -1611,7 +1689,7 @@ def generate_production_dataset(base_path: str, dataset_filename: str):
         "data": all_data
     }
 
-def get_mortality_predictions(base_path: str, dataset: dict, mortality_model_filename: str, normalizer_filename: str) -> Dict[np.ndarray, np.ndarray]:
+def get_mortality_predictions(base_path: str, dataset: dict, mortality_model_filename: str, normalizer_filename: str, test_type: str) -> Dict[np.ndarray, np.ndarray]:
     """
     Generates mortality predictions using a pre-trained LSTM model.
     Args:
@@ -1638,6 +1716,7 @@ def get_mortality_predictions(base_path: str, dataset: dict, mortality_model_fil
         tmp_y.append(np.ones((dataset["data"][stay_id].shape[0], 1)) * dataset["mortality_outcome"][stay_id])
     X = np.vstack(tmp_x)
     y = np.vstack(tmp_y)
+
     X = _normalize(
         normalizer_folder_path,
         X,
@@ -1651,7 +1730,7 @@ def get_mortality_predictions(base_path: str, dataset: dict, mortality_model_fil
     model_lstm = keras.models.load_model(model_path, custom_objects={'softmax_temperature': softmax_temperature, 'SoftmaxTemperature': SoftmaxTemperature})
     return {"y_true": y, "y_pred": model_lstm.predict(X)}
 
-def get_discharge_predictions(base_path: str, dataset: dict, discharge_model_filename: str, normalizer_filename: str) -> Dict[np.ndarray, np.ndarray]:
+def get_discharge_predictions(base_path: str, dataset: Optional[dict], discharge_model_filename: str, normalizer_filename: str, test_type: str) -> Dict[np.ndarray, np.ndarray]:
     """
     Generates discharge outcome predictions using a pre-trained LSTM model.
     Args:
@@ -1671,41 +1750,39 @@ def get_discharge_predictions(base_path: str, dataset: dict, discharge_model_fil
 
     X = np.vstack(list(dataset["data"].values()))[:, :, 1:]
     y = [np.array(item) for item in list(dataset["disch_outcome"].values())]
+
     X = _normalize(
         normalizer_folder_path,
         X,
         load=True,
         save=False,
         filename=normalizer_filename,
-        model="discharge"
+        model="mortality"
     )
+
     X = np.nan_to_num(X)
     model_lstm = keras.models.load_model(model_path, custom_objects={'softmax_temperature': softmax_temperature, 'SoftmaxTemperature': SoftmaxTemperature})
-    y_pred = model_lstm.predict(X)
     return {"y_true": y, "y_pred": model_lstm.predict(X)}
 
-def process_inference_predictions(mortality_pred: np.ndarray, discharge_pred: np.ndarray, mortality_groundtruth: np.ndarray, opt_th_mort: float, opt_th_disch: float, dataset: dict, data_folder_path: str, test_type: str):
+def process_predictions(mortality_pred: np.ndarray, discharge_pred: np.ndarray, mortality_groundtruth: np.ndarray, dataset: dict, base_path: str):
+            
+    data_folder_path = os.path.join(base_path, "data")
+
+    with open(os.path.join(data_folder_path, f"model_parameters_test.json"), "r") as f:
+        model_parameters = json.load(f)
+
+    opt_th_mort = model_parameters['th_mort']
+    opt_th_disch = model_parameters['th_disch']
+    min_prob = model_parameters['min_prob']
+    max_prob = model_parameters['max_prob']
 
     df_prob = pd.DataFrame({
         'mortality_prob': mortality_pred,
         'disch_prob': discharge_pred
     })
 
-    min_prob = df_prob['mortality_prob'].min()
-    max_prob = df_prob['mortality_prob'].max()
-
-    model_parameters = {
-        'th_disch': float(opt_th_disch),
-        'th_mort': float(opt_th_mort),
-        'min_prob': float(min_prob),
-        'max_prob': float(max_prob),
-    }
-
-    with open(os.path.join(data_folder_path, f"model_parameters_{test_type}.json"), "w") as f:
-        json.dump(model_parameters, f, indent=4)
-
-    df_prob['range'] = np.where(df_prob['mortality_prob']<opt_th_mort, (opt_th_mort-df_prob['mortality_prob'].min()), df_prob['mortality_prob'].max()-opt_th_mort)
-    df_prob['substract'] = np.where(df_prob['mortality_prob']<opt_th_mort, df_prob['mortality_prob']-df_prob['mortality_prob'].min(), df_prob['mortality_prob']-opt_th_mort)
+    df_prob['range'] = np.where(df_prob['mortality_prob']<opt_th_mort, (opt_th_mort-min_prob), max_prob-opt_th_mort)
+    df_prob['substract'] = np.where(df_prob['mortality_prob']<opt_th_mort, df_prob['mortality_prob']-min_prob, df_prob['mortality_prob']-opt_th_mort)
     df_prob['normalized'] = np.where(df_prob['mortality_prob']<opt_th_mort, ((df_prob['substract']/df_prob['range'])/2)*100, ((df_prob['substract']/df_prob['range']+1)/2)*100)
 
     df_prob['disch_prob_cat'] = np.where(df_prob['disch_prob']>opt_th_disch, 1, 0)
@@ -1728,7 +1805,7 @@ def process_inference_predictions(mortality_pred: np.ndarray, discharge_pred: np
 
     return df_prob
 
-def calculate_errors(base_path, dataset_filename, mortality_pred, discharge_pred, th_mort, th_disch, min_prob, max_prob):
+def calculate_errors(base_path, dataset_filename, disch_dataset, mort_dataset, mortality_pred, mortality_groundtruth, discharge_pred, discharge_groundtruth, th_mort, th_disch, min_prob, max_prob):
     
     data_folder_path = os.path.join(base_path, "data")
     data = _get_data(base_path, dataset_filename)
@@ -1740,31 +1817,26 @@ def calculate_errors(base_path, dataset_filename, mortality_pred, discharge_pred
     data = data.drop_duplicates(["stay_id", "hr"], keep="last").reset_index(drop=True)
     
     exitus = data[['stay_id','icu_expire_flag']].drop_duplicates()
-        
-    data = data[data['hr'] >= 47]
-    patient = np.array(data['stay_id'])
-    hr =  np.array(data['hr'])
-    
+
+    stay_ids = []
+
+    for stay_id in disch_dataset['data'].keys():
+        num_rows = disch_dataset['data'][stay_id].shape[0]
+        stay_ids.extend([stay_id] * num_rows)
+
     df = pd.DataFrame({
-    'stay_id': patient,
-    'hr': hr,
+    'stay_id': stay_ids,
     'mortality_prob': mortality_pred,
-    'disch_prob': discharge_pred
+    'mortality_gt': mortality_groundtruth,
+    'disch_prob': discharge_pred,
+    'disch_gt': discharge_groundtruth,
     })
     
-    final_result = pd.DataFrame()
-    
-    df = df[(df['hr']!=47) & (df['hr']!=48) ]
     df['range'] = np.where(df['mortality_prob']<th_mort, (th_mort-min_prob), max_prob-th_mort)
     df['substract'] = np.where(df['mortality_prob']<th_mort, df['mortality_prob']-min_prob, df['mortality_prob']-th_mort)
     df['normalized'] = np.where(df['mortality_prob']<th_mort, ((df['substract']/df['range'])/2)*100, ((df['substract']/df['range']+1)/2)*100)
-    
-    lasth = df.groupby('stay_id', as_index=False).agg({'hr':'max'}).rename({'hr':'lasthour'}, axis=1)
 
-    df = pd.merge(df, lasth, on='stay_id', how='left')
     df = pd.merge(df, exitus[['stay_id','icu_expire_flag']], on='stay_id', how='left')
-    df['disch_real'] = np.where(df['lasthour']-df['hr']<48, 1, 0)
-    df['last12h'] = np.where(df['lasthour']-df['hr']<12, 1, 0)
     df['disch_prob_cat'] = np.where(df['disch_prob']>th_disch, 1, 0)
     df['mortality_prob_cat'] = np.where(df['mortality_prob']>th_mort, 1, 0)
 
@@ -1772,9 +1844,9 @@ def calculate_errors(base_path, dataset_filename, mortality_pred, discharge_pred
                                     np.where((df['mortality_prob_cat']==1) & (df['disch_prob_cat']==0), 'EXITUS >48h',
                                             np.where((df['mortality_prob_cat']==0) & (df['disch_prob_cat']==0), 'ALIVE >48h', 'ALIVE <48h')))
         
-    df['real_color_group'] = np.where((df['icu_expire_flag']==1) & (df['disch_real']==1), 'EXITUS <48h',
-                            np.where((df['icu_expire_flag']==1) & (df['disch_real']==0), 'EXITUS >48h',
-                                    np.where((df['icu_expire_flag']==0) & (df['disch_real']==0), 'ALIVE >48h', 'ALIVE <48h')))
+    df['real_color_group'] = np.where((df['icu_expire_flag']==1) & (df['disch_gt']==1), 'EXITUS <48h',
+                            np.where((df['icu_expire_flag']==1) & (df['disch_gt']==0), 'EXITUS >48h',
+                                    np.where((df['icu_expire_flag']==0) & (df['disch_gt']==0), 'ALIVE >48h', 'ALIVE <48h')))
     
     df['error'] = np.where(((df['real_color_group']=='EXITUS <48h') & (df['color_group']=='ALIVE <48h')) | (
         (df['color_group']=='EXITUS <48h') & (df['real_color_group']=='ALIVE <48h')), 3,
@@ -1806,56 +1878,72 @@ def run_pipeline(dataset_filename:str, mode: str):
         generate_discharge_normalizer(BASE_PATH, dataset)
 
     elif mode == "generate_retrain_data":
-        generate_retrain_mortality_dataset(BASE_PATH, dataset_filename)
-        generate_retrain_discharge_dataset(BASE_PATH, dataset_filename)
+        generate_retrain_mortality_dataset(BASE_PATH, dataset_filename, "train")
+        generate_retrain_mortality_dataset(BASE_PATH, dataset_filename, "test")
+        generate_retrain_discharge_dataset(BASE_PATH, dataset_filename, "train")
+        generate_retrain_discharge_dataset(BASE_PATH, dataset_filename, "test")
 
     elif mode == "retrain_models":
-        retrain_mortality_model(BASE_PATH, RETRAIN_MORT_MODEL, MORT_NORMALIZER, RETRAIN_TYPE)
+        # retrain_mortality_model(BASE_PATH, RETRAIN_MORT_MODEL, MORT_NORMALIZER, RETRAIN_TYPE)
         retrain_discharge_model(BASE_PATH, RETRAIN_DISCH_MODEL, DISCH_NORMALIZER, RETRAIN_TYPE)
 
-    elif mode == "inference":
+    elif mode == "calculate_metrics":
 
         data_folder_path = os.path.join(BASE_PATH, "data")
+            
+        disch_dataset = get_test_dataset(BASE_PATH, DISCH_NORMALIZER, "discharge")
+        mort_dataset = get_test_dataset(BASE_PATH, MORT_NORMALIZER, "mortality")
+
+        discharge_outcome = get_discharge_predictions(BASE_PATH, disch_dataset, INFERENCE_DISCH_MODEL, DISCH_NORMALIZER, TEST_TYPE)
+        mortality_outcome = get_mortality_predictions(BASE_PATH, mort_dataset, INFERENCE_MORT_MODEL, MORT_NORMALIZER, TEST_TYPE)
+
+        mortality_pred = mortality_outcome['y_pred'][:, 1]
+        mortality_groundtruth = mortality_outcome['y_true'][:, 0]
+
+        discharge_pred = discharge_outcome['y_pred'][:, 1]
+        discharge_groundtruth = np.concatenate(discharge_outcome['y_true'], axis=0).ravel()
+
+        opt_th_mort, opt_th_disch = _plot_roc_combined(BASE_PATH,
+                                            mortality_pred, mortality_groundtruth, 
+                                            discharge_pred, discharge_groundtruth, 
+                                            threshold_method='min_distance',
+                                            save=True
+                                        )
+
+        min_prob = np.min(mortality_pred)
+        max_prob = np.max(mortality_pred)
+
+        model_parameters = {
+            'th_disch': float(opt_th_disch),
+            'th_mort': float(opt_th_mort),
+            'min_prob': float(min_prob),
+            'max_prob': float(max_prob),
+        }
+
+        with open(os.path.join(data_folder_path, f"model_parameters_test.json"), "w") as f:
+            json.dump(model_parameters, f, indent=4)
+        
+        df_prob = process_predictions(mortality_pred, discharge_pred, mortality_groundtruth, mort_dataset, BASE_PATH)
+
+        error_results = calculate_errors(BASE_PATH, dataset_filename, disch_dataset, mort_dataset, mortality_pred, mortality_groundtruth, discharge_pred, discharge_groundtruth, opt_th_mort, opt_th_disch, min_prob, max_prob)
+        _plot_error(error_results, BASE_PATH)
+
+    elif mode == "inference":
+    
         check_dataset(BASE_PATH, dataset_filename)
-        dataset = generate_test_dataset(BASE_PATH, dataset_filename, TEST_TYPE)
+        dataset = generate_inference_dataset(BASE_PATH, dataset_filename, TEST_TYPE)
 
-        discharge_outcome = get_discharge_predictions(BASE_PATH, dataset, INFERENCE_DISCH_MODEL, DISCH_NORMALIZER)
-        mortality_outcome = get_mortality_predictions(BASE_PATH, dataset, INFERENCE_MORT_MODEL, MORT_NORMALIZER)
-
+        discharge_outcome = get_discharge_predictions(BASE_PATH, dataset, INFERENCE_DISCH_MODEL, DISCH_NORMALIZER, TEST_TYPE)
+        mortality_outcome = get_mortality_predictions(BASE_PATH, dataset, INFERENCE_MORT_MODEL, MORT_NORMALIZER, TEST_TYPE)
+    
         mortality_pred = mortality_outcome['y_pred'][:, 1]
         mortality_groundtruth = mortality_outcome['y_true'][:, 0]
 
         discharge_pred = discharge_outcome['y_pred'][:, 1]
         discharge_groundtruth = np.hstack(discharge_outcome['y_true'])
 
-        # opt_th_mort = _plot_roc(
-        #     base_path="./",
-        #     image_name="roc_mortality" + "_" + TEST_TYPE,
-        #     groundtruth=mortality_groundtruth,
-        #     predictions=mortality_pred,
-        #     color="tab:red",
-        #     save=True
-        # )
-
-        # opt_th_disch = _plot_roc(
-        #     base_path="./",
-        #     image_name="roc_discharge" + "_" + TEST_TYPE,
-        #     groundtruth=discharge_groundtruth,
-        #     predictions=discharge_pred,
-        #     color="tab:red",
-        #     save=True
-        # )
-
-        opt_th_mort, opt_th_disch = _plot_roc_combined(BASE_PATH, TEST_TYPE, mortality_pred, mortality_groundtruth, discharge_pred, discharge_groundtruth)
-
-        df_prob = process_inference_predictions(mortality_pred, discharge_pred, mortality_groundtruth, opt_th_mort, opt_th_disch, dataset, data_folder_path, TEST_TYPE)
+        df_prob = process_predictions(mortality_pred, discharge_pred, mortality_groundtruth, dataset, BASE_PATH)
         _plot_inference(df_prob, BASE_PATH, test_type=TEST_TYPE, save=True)
-
-        min_prob = df_prob['mortality_prob'].min()
-        max_prob = df_prob['mortality_prob'].max()
-
-        error_results = calculate_errors(BASE_PATH, dataset_filename, mortality_pred, discharge_pred, opt_th_mort, opt_th_disch, min_prob, max_prob)
-        _plot_error(error_results, BASE_PATH, TEST_TYPE)
 
 # project root path
 BASE_PATH='./'
@@ -1865,24 +1953,24 @@ MORT_NORMALIZER='mimic_iv_normalizer.pkl' # custom_normalizer.pkl
 DISCH_NORMALIZER='mimic_iv_normalizer_disch.pkl' # custom_normalizer_disch.pkl
 
 # retrain type (zero, full, dense, lstm)
-RETRAIN_TYPE='full'
+RETRAIN_TYPE='zero'
 
 # models name that we want to retrain
 RETRAIN_MORT_MODEL='lstm_mortality_model.keras'
 RETRAIN_DISCH_MODEL='lstm_disch_model.keras'
 
 # models that we want to evaluate in inference mode
-INFERENCE_MORT_MODEL='RETRAINED_full_lstm_mortality_model.keras'
-INFERENCE_DISCH_MODEL='RETRAINED_full_lstm_disch_model.keras'
+INFERENCE_MORT_MODEL='RETRAINED_zero_lstm_mortality_model.keras'
+INFERENCE_DISCH_MODEL='RETRAINED_zero_lstm_disch_model.keras'
 
-# inference type (inference, last_48h, last_98h, first_48h)
-TEST_TYPE='inference'
+# inference type (full, last_48h, last_98h, first_48h)
+TEST_TYPE='last_48h'
 
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="Run LSTM test pipeline")
     parser.add_argument("--csv_filename", type=str, help="CSV dataset filename (e.g., jx_data.csv)")
-    parser.add_argument("--mode", type=str, help="Mode type (generate_files, generate_retrain_data, retrain_models, inference)")
+    parser.add_argument("--mode", type=str, help="Mode type (generate_files, generate_retrain_data, retrain_models, calculate_metrics, inference)")
     args = parser.parse_args()
 
     # Check if both arguments are provided

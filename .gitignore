@@ -171,4 +171,10 @@ models/*
 normalizers/*
 !normalizers/mimic_iv_normalizer.pkl
 !normalizers/mimic_iv_normalizer_disch.pkl
-results/
+results/*
+!results/images/
+results/images/*.png
+results/images/inference/*.png
+results/images/last_48h/*.png
+results/images/last_96h/*.png
+results/images/first_48h/*.png
