@@ -174,7 +174,7 @@ normalizers/*
 results/*
 !results/images/
 results/images/*.png
-results/images/inference/*.png
+results/images/full/*.png
 results/images/last_48h/*.png
 results/images/last_96h/*.png
 results/images/first_48h/*.png

@@ -1493,8 +1493,8 @@ def generate_inference_dataset(base_path: str, dataset_filename: str, test_type:
         - Assumes existence of helper functions: _correct_outliers, _impute_first_row, _apply_nan_rules, _process_stay, tqdm_joblib.
     """
 
-    if test_type not in ["retrain", "inference", "last_48h", "last_96h", "first_48h"]:
-        raise ValueError(f"Invalid test_type: '{test_type}'. Must be 'retrain', 'inference', 'last_48h', 'last_96h' or 'first_48h'.")
+    if test_type not in ["full", "last_48h", "last_96h", "first_48h"]:
+        raise ValueError(f"Invalid test_type: '{test_type}'. Must be 'full', 'last_48h', 'last_96h' or 'first_48h'.")
 
     data_folder_path = os.path.join(base_path, "data")
     data_path = os.path.join(data_folder_path, dataset_filename)
@@ -1764,11 +1764,11 @@ def get_discharge_predictions(base_path: str, dataset: Optional[dict], discharge
     model_lstm = keras.models.load_model(model_path, custom_objects={'softmax_temperature': softmax_temperature, 'SoftmaxTemperature': SoftmaxTemperature})
     return {"y_true": y, "y_pred": model_lstm.predict(X)}
 
-def process_predictions(mortality_pred: np.ndarray, discharge_pred: np.ndarray, mortality_groundtruth: np.ndarray, dataset: dict, base_path: str):
+def process_predictions(mortality_pred: np.ndarray, discharge_pred: np.ndarray, mortality_groundtruth: np.ndarray, dataset: dict, base_path: str, mode: str):
             
     data_folder_path = os.path.join(base_path, "data")
 
-    with open(os.path.join(data_folder_path, f"model_parameters_test.json"), "r") as f:
+    with open(os.path.join(data_folder_path, f"model_parameters_{mode}.json"), "r") as f:
         model_parameters = json.load(f)
 
     opt_th_mort = model_parameters['th_mort']
@@ -1923,12 +1923,14 @@ def run_pipeline(dataset_filename:str, mode: str):
         with open(os.path.join(data_folder_path, f"model_parameters_test.json"), "w") as f:
             json.dump(model_parameters, f, indent=4)
         
-        df_prob = process_predictions(mortality_pred, discharge_pred, mortality_groundtruth, mort_dataset, BASE_PATH)
+        df_prob = process_predictions(mortality_pred, discharge_pred, mortality_groundtruth, mort_dataset, BASE_PATH, "test")
 
         error_results = calculate_errors(BASE_PATH, dataset_filename, disch_dataset, mort_dataset, mortality_pred, mortality_groundtruth, discharge_pred, discharge_groundtruth, opt_th_mort, opt_th_disch, min_prob, max_prob)
         _plot_error(error_results, BASE_PATH)
 
     elif mode == "inference":
+
+        data_folder_path = os.path.join(BASE_PATH, "data")
     
         check_dataset(BASE_PATH, dataset_filename)
         dataset = generate_inference_dataset(BASE_PATH, dataset_filename, TEST_TYPE)
@@ -1942,7 +1944,27 @@ def run_pipeline(dataset_filename:str, mode: str):
         discharge_pred = discharge_outcome['y_pred'][:, 1]
         discharge_groundtruth = np.hstack(discharge_outcome['y_true'])
 
-        df_prob = process_predictions(mortality_pred, discharge_pred, mortality_groundtruth, dataset, BASE_PATH)
+        opt_th_mort, opt_th_disch = _plot_roc_combined(BASE_PATH,
+                                            mortality_pred, mortality_groundtruth, 
+                                            discharge_pred, discharge_groundtruth, 
+                                            threshold_method='min_distance',
+                                            save=False
+                                        )
+
+        min_prob = np.min(mortality_pred)
+        max_prob = np.max(mortality_pred)
+
+        model_parameters = {
+            'th_disch': float(opt_th_disch),
+            'th_mort': float(opt_th_mort),
+            'min_prob': float(min_prob),
+            'max_prob': float(max_prob),
+        }
+
+        with open(os.path.join(data_folder_path, f"model_parameters_inference.json"), "w") as f:
+            json.dump(model_parameters, f, indent=4)
+
+        df_prob = process_predictions(mortality_pred, discharge_pred, mortality_groundtruth, dataset, BASE_PATH, "inference")
         _plot_inference(df_prob, BASE_PATH, test_type=TEST_TYPE, save=True)
 
 # project root path
