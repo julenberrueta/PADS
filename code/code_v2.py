@@ -1964,7 +1964,7 @@ INFERENCE_MORT_MODEL='RETRAINED_zero_lstm_mortality_model.keras'
 INFERENCE_DISCH_MODEL='RETRAINED_zero_lstm_disch_model.keras'
 
 # inference type (full, last_48h, last_98h, first_48h)
-TEST_TYPE='last_48h'
+TEST_TYPE='full'
 
 if __name__ == "__main__":
 
