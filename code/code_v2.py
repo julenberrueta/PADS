@@ -1884,7 +1884,7 @@ def run_pipeline(dataset_filename:str, mode: str):
         generate_retrain_discharge_dataset(BASE_PATH, dataset_filename, "test")
 
     elif mode == "retrain_models":
-        # retrain_mortality_model(BASE_PATH, RETRAIN_MORT_MODEL, MORT_NORMALIZER, RETRAIN_TYPE)
+        retrain_mortality_model(BASE_PATH, RETRAIN_MORT_MODEL, MORT_NORMALIZER, RETRAIN_TYPE)
         retrain_discharge_model(BASE_PATH, RETRAIN_DISCH_MODEL, DISCH_NORMALIZER, RETRAIN_TYPE)
 
     elif mode == "calculate_metrics":
