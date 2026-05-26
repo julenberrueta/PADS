@@ -121,7 +121,10 @@ celerybeat.pid
 
 # Environments
 .env
+.env.*
+!.env.example
 .venv
+.venv-linux
 env/
 env*/
 venv/
@@ -171,10 +174,22 @@ models/*
 normalizers/*
 !normalizers/mimic_iv_normalizer.pkl
 !normalizers/mimic_iv_normalizer_disch.pkl
+# Generated outputs grouped per model: results/<retrain_type>/{*.csv,*.json,images/*.png}
 results/*
-!results/images/
-results/images/*.png
-results/images/full/*.png
-results/images/last_48h/*.png
-results/images/last_96h/*.png
-results/images/first_48h/*.png
+.pytest_cache/
+
+# uv (the .venv/ is already covered above; uv.lock SHOULD be committed)
+.uv-cache/
+
+# MLflow cross-process parent run id (written by retrain_models)
+.mlflow_parent_run_id
+
+# Local MLflow server (web app): SQLite backend + filesystem artifact store
+mlflow.db
+mlartifacts/
+mlruns/
+
+# Web app job history (metadata + captured logs)
+.pads_app/
+
+.claude/
