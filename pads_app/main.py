@@ -1,0 +1,188 @@
+"""FastAPI app: serves the frontend and the JSON API that drives the pipeline."""
+from __future__ import annotations
+
+import tempfile
+from pathlib import Path
+
+from fastapi import FastAPI, Form, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+
+from pads.data.schema import DatasetValidationError, validate_dataset
+from pads_app import mlflow_api
+from pads_app.config import get_settings
+from pads_app.jobs import JobBusyError, TrainParams, manager
+
+_HERE = Path(__file__).parent
+app = FastAPI(title="PADS Trainer")
+app.mount("/static", StaticFiles(directory=_HERE / "static"), name="static")
+templates = Jinja2Templates(directory=str(_HERE / "templates"))
+
+# Per-epoch curves are logged under these prefixes by MLflowEpochLogger.
+_CURVE_PREFIXES = ("mort/", "disch/")
+
+
+@app.get("/")
+def index(request: Request):
+    settings = get_settings()
+    return templates.TemplateResponse(
+        "index.html",
+        {
+            "request": request,
+            "mlflow_enabled": settings.mlflow_enabled,
+            "tracking_uri": settings.tracking_uri or "",
+            "experiment": settings.experiment,
+        },
+    )
+
+
+@app.post("/api/validate")
+async def api_validate(file: UploadFile):
+    """Schema-check an uploaded dataset without saving it into the project."""
+    info = _check_dataset(await file.read(), file.filename or "dataset.csv")
+    return JSONResponse(info, status_code=200 if info["ok"] else 422)
+
+
+@app.post("/api/train")
+async def api_train(
+    file: UploadFile,
+    retrain_types: str = Form(...),  # comma-separated, e.g. "full,scratch"
+    epochs: int = Form(1000),
+    batch_size: int = Form(100),
+    learning_rate: float = Form(1e-5),
+    seed: int = Form(42),
+):
+    settings = get_settings()
+    raw = await file.read()
+    filename = Path(file.filename or "dataset.csv").name
+
+    check = _check_dataset(raw, filename)
+    if not check["ok"]:
+        raise HTTPException(status_code=422, detail=check["error"])
+
+    types = [t.strip() for t in retrain_types.split(",") if t.strip()]
+    if not types:
+        raise HTTPException(status_code=422, detail="Select at least one retrain type.")
+
+    # Persist the dataset where the pipeline expects it: <base_path>/data/.
+    settings.data_dir.mkdir(parents=True, exist_ok=True)
+    (settings.data_dir / filename).write_bytes(raw)
+
+    params = TrainParams(
+        data_filename=filename,
+        retrain_types=types,
+        epochs=epochs,
+        batch_size=batch_size,
+        learning_rate=learning_rate,
+        seed=seed,
+    )
+    try:
+        job = manager.start(params)
+    except JobBusyError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return job.public()
+
+
+@app.get("/api/jobs")
+def api_jobs():
+    return manager.list()
+
+
+@app.get("/api/jobs/{job_id}")
+def api_job(job_id: str):
+    job = manager.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Unknown job")
+    return job.public()
+
+
+@app.delete("/api/jobs/{job_id}")
+def api_job_delete(job_id: str):
+    if not manager.delete(job_id):
+        raise HTTPException(status_code=404, detail="Unknown job")
+    return {"ok": True}
+
+
+@app.get("/api/jobs/{job_id}/log")
+def api_job_log(job_id: str, tail: int = 400):
+    if manager.get(job_id) is None:
+        raise HTTPException(status_code=404, detail="Unknown job")
+    lines = manager.log(job_id)
+    return {"lines": lines[-tail:]}
+
+
+@app.post("/api/jobs/{job_id}/cancel")
+def api_job_cancel(job_id: str):
+    if not manager.cancel(job_id):
+        raise HTTPException(status_code=409, detail="Job is not running")
+    return {"ok": True}
+
+
+@app.get("/api/jobs/{job_id}/metrics")
+def api_job_metrics(job_id: str):
+    """Live metrics for the job's MLflow runs: per-epoch curves + final values."""
+    runs = mlflow_api.job_runs(job_id)
+    for run in runs:
+        history: dict[str, list] = {}
+        for key in run["metrics"]:
+            if key.startswith(_CURVE_PREFIXES):
+                history[key] = mlflow_api.metric_history(run["run_id"], key)
+        run["history"] = history
+    return {"mlflow_enabled": get_settings().mlflow_enabled, "runs": runs}
+
+
+@app.get("/api/runs/{run_id}/artifacts")
+def api_artifacts(run_id: str, path: str = ""):
+    return {"artifacts": mlflow_api.list_artifacts(run_id, path)}
+
+
+@app.get("/api/runs/{run_id}/download")
+def api_download(run_id: str, path: str):
+    try:
+        local = mlflow_api.download_artifact(run_id, path)
+    except Exception as exc:  # noqa: BLE001 - surface any MLflow error to the client
+        raise HTTPException(status_code=404, detail=f"Artifact not found: {exc}") from exc
+    # Serve inline (no forced attachment) so images can be previewed/opened in
+    # the browser; the frontend's `download` attribute handles actual downloads.
+    return FileResponse(local)
+
+
+# --- helpers ----------------------------------------------------------------
+def _check_dataset(raw: bytes, filename: str) -> dict:
+    """Validate raw bytes via the existing schema validator.
+
+    Returns {ok, rows, stays} on success, {ok: False, error} on failure.
+    """
+    suffix = Path(filename).suffix or ".csv"
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+        tmp.write(raw)
+        tmp_path = Path(tmp.name)
+    try:
+        df = validate_dataset(tmp_path)
+        return {
+            "ok": True,
+            "filename": Path(filename).name,
+            "rows": int(len(df)),
+            "stays": int(df["stay_id"].nunique()) if "stay_id" in df.columns else None,
+        }
+    except DatasetValidationError as exc:
+        return {"ok": False, "error": str(exc)}
+    except Exception as exc:  # noqa: BLE001 - bad file, unreadable parquet, etc.
+        return {"ok": False, "error": f"Could not read dataset: {exc}"}
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
+def run() -> None:
+    """Console-script entry point: `pads-app` (or `uv run pads-app`)."""
+    import os
+
+    import uvicorn
+
+    uvicorn.run(
+        "pads_app.main:app",
+        host=os.getenv("PADS_APP_HOST", "127.0.0.1"),
+        port=int(os.getenv("PADS_APP_PORT", "8000")),
+        reload=bool(os.getenv("PADS_APP_RELOAD")),
+    )

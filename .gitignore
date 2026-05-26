@@ -184,4 +184,12 @@ results/*
 # MLflow cross-process parent run id (written by retrain_models)
 .mlflow_parent_run_id
 
+# Local MLflow server (web app): SQLite backend + filesystem artifact store
+mlflow.db
+mlartifacts/
+mlruns/
+
+# Web app job history (metadata + captured logs)
+.pads_app/
+
 .claude/

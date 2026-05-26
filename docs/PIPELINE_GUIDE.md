@@ -648,14 +648,18 @@ The normalizers are fit only on **training stays** to avoid leakage. The committ
 
 ### 12.2 Step 2 — `retrain_models()`
 
-Loads the base models from `models/` and fine-tunes them. `retrain_type` controls the freezing strategy:
+Loads the base models from `models/` and fine-tunes them. `retrain_type` controls the freezing strategy. Each model is `LSTM → Dense(50) → BatchNorm → … → Dense(2)`:
 
-| Value   | LSTM layer            | Dense head |
-|---------|-----------------------|-----------|
-| `full`  | trainable             | trainable |
-| `dense` | **frozen**            | trainable |
-| `lstm`  | trainable             | **frozen** |
-| `scratch` | random init (base model ignored) | random init |
+| Value   | LSTM      | BatchNorm | Dense layers | Notes |
+|---------|-----------|-----------|--------------|-------|
+| `full`  | trainable | trainable | trainable    | fine-tune everything from the base model |
+| `dense` | **frozen**| trainable | trainable    | keep the pretrained LSTM features, retrain the head |
+| `lstm`  | trainable | trainable | **frozen**   | retrain the LSTM; BatchNorm re-fits so it doesn't diverge |
+| `scratch` | random init | random init | random init | base model ignored, trained from scratch |
+
+`scratch` randomises **the whole model** (not just the LSTM). In `lstm`, only the
+`Dense` layers are frozen — BatchNorm stays trainable so it adapts to the
+retrained LSTM's outputs (freezing it caused NaN divergence on small datasets).
 
 **Writes:**
 

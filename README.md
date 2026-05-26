@@ -119,8 +119,29 @@ Outputs are grouped per model under `results/<retrain_type>/` (e.g. `results/ful
 | `--test_type`       | `full` / `last_48h` / `last_96h` / `first_48h` | Which window of each stay to score during inference.    |
 | `--epochs`          | int                                           | Default 1000. Reduce for quick smoke tests.              |
 | `--batch_size`      | int                                           | Default 100.                                             |
+| `--learning_rate_mort` / `--learning_rate_disch` | float            | Per-model LR. Default 1e-5.                              |
 | `--seed`            | int                                           | Default 42. Applied to Python, NumPy and TF.             |
 | `--base_path`       | path                                          | Project root. Default `./`.                              |
+
+---
+
+## Web app (training frontend)
+
+A small FastAPI app wraps the whole pipeline behind a browser UI: drag-and-drop a
+dataset (validated on the spot), pick retrain types / epochs / learning rate, hit
+**Retrain**, and watch per-epoch metrics stream in from a local MLflow server.
+Results and artifacts (models, normalizers, plots, `final_result.csv`) are
+downloadable from the page. No Docker and no MinIO — everything runs via `uv`
+with a local MLflow (SQLite backend + filesystem artifact store).
+
+```powershell
+uv sync --extra app     # one-time: install web deps
+.\scripts\app.ps1       # starts MLflow (:5000) + app (:8000)  — app.sh on Linux
+```
+
+Then open <http://127.0.0.1:8000>. Selecting several retrain types trains them
+sequentially. See [`docs/PIPELINE_GUIDE.md`](docs/PIPELINE_GUIDE.md) for the
+architecture.
 
 ---
 

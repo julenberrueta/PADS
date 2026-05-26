@@ -8,7 +8,13 @@ from typing import Literal
 import numpy as np
 import tensorflow as tf
 from sklearn.utils.class_weight import compute_class_weight
-from tensorflow.keras.callbacks import Callback, EarlyStopping, ModelCheckpoint, TensorBoard
+from tensorflow.keras.callbacks import (
+    Callback,
+    EarlyStopping,
+    ModelCheckpoint,
+    TensorBoard,
+    TerminateOnNaN,
+)
 
 from pads import tracking
 
@@ -90,10 +96,13 @@ def fit(
             save_best_only=True,
             verbose=1,
         ),
+        # Stop immediately if the loss goes to NaN/Inf instead of running every
+        # epoch and silently saving a model with NaN weights.
+        TerminateOnNaN(),
         MLflowEpochLogger(prefix=prefix),
     ]
 
-    return model.fit(
+    history = model.fit(
         X_train,
         y_train,
         class_weight=class_weights(y_train, kind),
@@ -103,6 +112,29 @@ def fit(
         validation_data=(X_val, y_val),
         callbacks=callbacks,
     )
+    assert_finite_weights(model, model_name)
+    return history
+
+
+def assert_finite_weights(model: tf.keras.Model, name: str) -> None:
+    """Raise if any weight is NaN/Inf — i.e. training diverged.
+
+    Guards against persisting a broken model. Divergence to NaN typically
+    happens on very small or degenerate datasets (e.g. the synthetic smoke-test
+    set) rather than with real cohorts; the message points the user there.
+    """
+    for w in model.weights:
+        arr = w.numpy()
+        if not np.isfinite(arr).all():
+            n_bad = int((~np.isfinite(arr)).sum())
+            raise ValueError(
+                f"Training of '{name}' diverged: {n_bad}/{arr.size} non-finite values in "
+                f"weight '{getattr(w, 'name', '?')}' (loss went to NaN/Inf; stopped by "
+                f"TerminateOnNaN). This usually means the dataset is too small or "
+                f"degenerate for this configuration (the synthetic dataset is for smoke "
+                f"tests only). Try real/larger data, fewer epochs, a lower learning rate, "
+                f"or a different --retrain_type."
+            )
 
 
 def set_global_seed(seed: int) -> None:

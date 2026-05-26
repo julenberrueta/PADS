@@ -34,8 +34,9 @@ def load_or_create_model(
     `retrain_type`:
       - "scratch": build a fresh model from scratch (base model is ignored)
       - "full":    load the base model with all layers trainable
-      - "dense":   load and freeze the LSTM (layer 0)
-      - "lstm":    load and freeze every layer except the LSTM (layer 0)
+      - "dense":   load and freeze the LSTM (layer 0); train the head
+      - "lstm":    load and freeze the Dense layers; train the LSTM and let
+                   BatchNormalization adapt to the new activation distribution
     """
     if retrain_type == "scratch":
         return (
@@ -48,6 +49,11 @@ def load_or_create_model(
     if retrain_type == "dense":
         model.layers[0].trainable = False
     elif retrain_type == "lstm":
-        for layer in model.layers[1:]:
-            layer.trainable = False
+        # Train the LSTM feature extractor and let BatchNorm re-fit its stats;
+        # freeze only the Dense classifier. Freezing BatchNorm here (its stale
+        # moving stats no longer matching the retrained LSTM's outputs) made the
+        # optimisation diverge to NaN on small datasets.
+        for layer in model.layers:
+            if isinstance(layer, tf.keras.layers.Dense):
+                layer.trainable = False
     return model

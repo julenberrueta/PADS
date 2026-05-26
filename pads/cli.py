@@ -53,6 +53,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--seed", default=None, type=int, help="default from PADSConfig (42)")
     p.add_argument("--epochs", default=None, type=int, help="default from PADSConfig (1000)")
     p.add_argument("--batch_size", default=None, type=int, help="default from PADSConfig (100)")
+    p.add_argument("--learning_rate_mort", default=None, type=float,
+                   help="mortality LR; default from PADSConfig (1e-5)")
+    p.add_argument("--learning_rate_disch", default=None, type=float,
+                   help="discharge LR; default from PADSConfig (1e-5)")
     return p
 
 
@@ -72,6 +76,8 @@ def main(argv: list[str] | None = None) -> int:
             "seed": args.seed,
             "epochs": args.epochs,
             "batch_size": args.batch_size,
+            "learning_rate_mort": args.learning_rate_mort,
+            "learning_rate_disch": args.learning_rate_disch,
         }.items() if v is not None
     }
     config = PADSConfig(base_path=args.base_path, **overrides)

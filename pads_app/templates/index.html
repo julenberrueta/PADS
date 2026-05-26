@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PADS Trainer</title>
+  <link rel="stylesheet" href="/static/style.css" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+</head>
+<body>
+  <header>
+    <h1>PADS Trainer</h1>
+    {% if mlflow_enabled %}
+      <span class="badge ok" title="{{ tracking_uri }}">MLflow ON · {{ experiment }}</span>
+    {% else %}
+      <span class="badge warn">MLflow OFF — set MLFLOW_TRACKING_URI for live metrics</span>
+    {% endif %}
+  </header>
+
+  <main>
+    <!-- 1. Dataset upload + validation -->
+    <section class="card">
+      <h2>1 · Dataset</h2>
+      <div id="dropzone" class="dropzone">
+        <p>Drag &amp; drop your <strong>.csv</strong> / <strong>.parquet</strong> here, or click to browse</p>
+        <input type="file" id="fileInput" accept=".csv,.parquet" hidden />
+      </div>
+      <div id="validation" class="validation hidden"></div>
+    </section>
+
+    <!-- 2. Training options -->
+    <section class="card">
+      <h2>2 · Training options</h2>
+      <fieldset>
+        <legend>Retrain type (multiple → trained sequentially)</legend>
+        <label><input type="checkbox" name="retrain" value="full" checked /> full</label>
+        <label><input type="checkbox" name="retrain" value="dense" /> dense</label>
+        <label><input type="checkbox" name="retrain" value="lstm" /> lstm</label>
+        <label><input type="checkbox" name="retrain" value="scratch" /> scratch</label>
+      </fieldset>
+      <div class="grid">
+        <label>Epochs <input type="number" id="epochs" value="1000" min="1" /></label>
+        <label>Batch size <input type="number" id="batch_size" value="100" min="1" /></label>
+        <label>Learning rate <input type="number" id="learning_rate" value="0.00001" step="0.000001" min="0" /></label>
+        <label>Seed <input type="number" id="seed" value="42" /></label>
+      </div>
+      <details class="note">
+        <summary>Inference is evaluated on all four window types</summary>
+        <ul>
+          <li><strong>full</strong> — every hour of each stay from hour 47 onward (the whole trajectory).</li>
+          <li><strong>last_48h</strong> — only the last 48 h before discharge/death.</li>
+          <li><strong>last_96h</strong> — only the last 96 h.</li>
+          <li><strong>first_48h</strong> — only the first 48 h of the stay.</li>
+        </ul>
+      </details>
+      <button id="trainBtn" class="primary" disabled>Retrain</button>
+    </section>
+
+    <!-- History -->
+    <section class="card" id="historyCard">
+      <h2>History <button id="refreshHistory" class="ghost" title="Refresh">↻</button></h2>
+      <ul id="jobList" class="job-list"><li class="muted">No runs yet.</li></ul>
+    </section>
+
+    <!-- 3. Job progress -->
+    <section class="card hidden" id="jobCard">
+      <h2>3 · Run <span id="jobStatus" class="badge"></span></h2>
+      <ol id="steps" class="steps"></ol>
+      <button id="cancelBtn" class="danger">Cancel</button>
+      <details>
+        <summary>Logs</summary>
+        <pre id="log" class="log"></pre>
+      </details>
+    </section>
+
+    <!-- 4. Live metrics -->
+    <section class="card hidden" id="metricsCard">
+      <h2>4 · Metrics</h2>
+      <div id="charts"></div>
+    </section>
+
+    <!-- 5. Results / artifacts -->
+    <section class="card hidden" id="resultsCard">
+      <h2>5 · Results &amp; artifacts</h2>
+      <div id="results"></div>
+    </section>
+  </main>
+
+  <!-- error / info popup -->
+  <div id="modal" class="modal hidden">
+    <div class="modal-box">
+      <h3 id="modalTitle"></h3>
+      <p id="modalBody"></p>
+      <button onclick="document.getElementById('modal').classList.add('hidden')">Close</button>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

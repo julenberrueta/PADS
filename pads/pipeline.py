@@ -392,7 +392,8 @@ class PADSPipeline:
         )
         X = np.nan_to_num(X)
         model = load_model(self._model(model_filename))
-        return {"y_true": y, "y_pred": model.predict(X)}
+        y_pred = self._ensure_finite_predictions(model.predict(X), model_filename)
+        return {"y_true": y, "y_pred": y_pred}
 
     def _predict_discharge(self, dataset: dict, model_filename: str) -> dict:
         X = np.vstack(list(dataset["data"].values()))[:, :, 1:]
@@ -402,7 +403,26 @@ class PADSPipeline:
         )
         X = np.nan_to_num(X)
         model = load_model(self._model(model_filename))
-        return {"y_true": y, "y_pred": model.predict(X)}
+        y_pred = self._ensure_finite_predictions(model.predict(X), model_filename)
+        return {"y_true": y, "y_pred": y_pred}
+
+    @staticmethod
+    def _ensure_finite_predictions(y_pred: np.ndarray, model_filename: str) -> np.ndarray:
+        """Fail clearly if a model emits NaN/Inf predictions (diverged weights).
+
+        Without this, the non-finite scores reach sklearn's roc_curve and raise
+        an opaque 'Input contains NaN'. A saved model with NaN weights means its
+        training diverged — see trainer.assert_finite_weights.
+        """
+        n_bad = int((~np.isfinite(y_pred)).sum())
+        if n_bad:
+            raise ValueError(
+                f"Model '{model_filename}' produced {n_bad}/{y_pred.size} non-finite "
+                f"predictions — its weights diverged during training (NaN). Retrain it "
+                f"with real/larger data or a different --retrain_type; the synthetic "
+                f"dataset is for smoke tests only."
+            )
+        return y_pred
 
     # --- internal: dataset builders -----------------------------------------
     def _build_window_dataset(self, data_filename: str, split: str, medians: dict) -> dict:
