@@ -85,6 +85,14 @@ fieldset { border: 1px solid var(--border); border-radius: 8px; margin: 0 0 1rem
 legend { color: var(--muted); font-size: 0.85rem; padding: 0 0.4rem; }
 fieldset label { margin-right: 1rem; }
 
+.adv-toggle { display: inline-flex; align-items: center; gap: 0.4rem; font-size: 0.85rem; color: var(--muted); margin-bottom: 1rem; cursor: pointer; }
+.adv-toggle input { width: auto; }
+.hint { margin: 0 0 0.75rem; color: var(--muted); font-size: 0.8rem; }
+fieldset.advanced .grid { margin-bottom: 0; }
+
+.baseline-toggle { display: inline-flex; align-items: center; gap: 0.4rem; font-size: 0.9rem; cursor: pointer; }
+.baseline-toggle input { width: auto; }
+
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
@@ -155,7 +163,7 @@ canvas { max-height: 260px; }
 .tab.active { color: var(--text); border-bottom-color: var(--accent); }
 .tab-panel.hidden { display: none; }
 
-.chart-row { display: flex; flex-wrap: wrap; gap: 1.25rem; }
+.chart-row { display: flex; flex-wrap: wrap; gap: 1.25rem; justify-content: space-evenly; align-items: flex-start; }
 .chart-col { flex: 1 1 360px; min-width: 300px; height: 300px; }
 .chart-col canvas { max-height: none; }
 .chart-col.bars { max-width: 520px; height: 300px; }
@@ -181,6 +189,41 @@ details summary { cursor: pointer; color: var(--muted); }
 table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
 th, td { text-align: left; padding: 0.35rem 0.5rem; border-bottom: 1px solid var(--border); }
 a.dl { color: var(--accent); text-decoration: none; }
+a.dl-all {
+  float: right;
+  color: var(--accent);
+  text-decoration: none;
+  padding: 0.3rem 0.8rem;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  font-size: 0.8rem;
+  font-weight: normal;
+  cursor: pointer;
+}
+a.dl-all:hover { background: var(--accent); color: #fff; }
+a.dl-all.hidden { display: none; }
+a.dl-all.loading { opacity: 0.7; pointer-events: none; }
+
+.loader {
+  display: flex; align-items: center; gap: 0.6rem;
+  color: var(--muted); font-size: 0.9rem; padding: 1.5rem 0;
+}
+.loader::before {
+  content: ""; width: 18px; height: 18px; flex: none;
+  border: 2px solid var(--border); border-top-color: var(--accent);
+  border-radius: 50%; animation: spin 0.7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* Square ROC comparison charts (maintainAspectRatio:1 makes the canvas square;
+   height:auto lets the column grow to fit the square canvas + download link). */
+.chart-col.roc { flex: 1 1 320px; max-width: 420px; height: auto; }
+
+/* "Metrics" / "Inference" section headers inside a results tab. */
+.result-section { margin-top: 1.75rem; padding-top: 0.85rem; border-top: 1px solid var(--border); }
+.result-section:first-child { margin-top: 0.25rem; padding-top: 0; border-top: none; }
+.result-section h3 { font-size: 1.2rem; margin: 0 0 0.25rem; }
+.result-section .hint { margin: 0 0 0.85rem; }
 
 .job-list { list-style: none; padding: 0; margin: 0; }
 .job-list li.muted { color: var(--muted); }

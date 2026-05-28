@@ -295,7 +295,7 @@ calculate_metrics
         │  data/processed/model_parameters_test.json, results/<rt>/images/roc_combined.png
         ▼
 inference
-        │  results/<rt>/{final_result.csv, model_parameters_inference.json},
+        │  results/<rt>/{results_inference.csv, model_parameters_inference.json},
         │  results/<rt>/images/{roc_combined_<test_type>,barplot_error,heatmap_error}.png
 ```
 
@@ -373,7 +373,7 @@ Each pipeline step opens its own MLflow run (nested when called from `retrain_mo
 | `retrain_mortality` (child)  | last-epoch metrics (`mort/val_loss`, `mort/val_AUC`, …); the `.keras` artifact |
 | `retrain_discharge` (child)  | same, with `disch/` prefix                                                     |
 | `calculate_metrics`          | `test/mort_auc`, `test/mort_f1`, `test/disch_auc`, …; the ROC PNG              |
-| `inference`                  | `inf/<test_type>/mean_error`, `critical_error_rate`, …; `final_result.csv` + plots |
+| `inference`                  | `inf/<test_type>/mean_error`, `critical_error_rate`, …; `results_inference.csv` + plots |
 
 The first 16 hex chars of the input dataset's SHA-256 are tagged on every run as `dataset_sha256`, so you can answer "which dataset trained this model?" from the MLflow UI.
 
@@ -689,7 +689,7 @@ End-to-end inference plus error categorisation. `test_type` slices each stay to 
 
 **Writes:**
 
-- `results/<retrain_type>/final_result.csv` — per-prediction row with both probabilities, both categories, and severity 0..3.
+- `results/<retrain_type>/results_inference.csv` — per-prediction row with both probabilities, both categories, and severity 0..3.
 - `results/<retrain_type>/model_parameters_inference.json`.
 - `results/<retrain_type>/images/roc_combined_<test_type>.png`.
 - `results/<retrain_type>/images/barplot_error.png` — error distribution.
@@ -750,7 +750,7 @@ A frank pass through what's left, with a recommendation per item.
 
 These are non-blocking — the pipeline is complete and tested as-is.
 
-- **Calibration.** Today the "adjusted mortality %" in `final_result.csv` is a min-max normalisation, not a calibrated probability. Adding `CalibratedClassifierCV` or isotonic regression would make the % clinically interpretable.
+- **Calibration.** Today the "adjusted mortality %" in `results_inference.csv` is a min-max normalisation, not a calibrated probability. Adding `CalibratedClassifierCV` or isotonic regression would make the % clinically interpretable.
 - **Model registry.** When the MLflow server is up, wire `mlflow.register_model()` into `retrain_*` and load with `models:/pads_*/Production` in the inference path.
 - **Pickles → parquet / `.npz`.** Pickles are fragile across NumPy versions. Migration is straightforward but breaks compatibility with existing `data/*.pkl`.
 - **Docker.** A `Dockerfile` with pinned CUDA + TF for fully reproducible server runs.

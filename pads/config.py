@@ -6,7 +6,10 @@ from typing import Literal
 
 from pydantic import BaseModel, model_validator
 
-RetrainType = Literal["full", "dense", "lstm", "scratch"]
+# "original" is evaluation-only: the shipped base model with no retraining. It is
+# a valid label for calculate_metrics/inference (to baseline the off-the-shelf
+# model) but never for retrain_models — see PADSPipeline.retrain_models.
+RetrainType = Literal["full", "dense", "lstm", "scratch", "original"]
 TestType = Literal["full", "last_48h", "last_96h", "first_48h"]
 
 

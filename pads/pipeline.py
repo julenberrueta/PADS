@@ -98,6 +98,23 @@ class PADSPipeline:
         # Per-model subfolder (results/<retrain_type>/...) so sweeps don't collide.
         return self.config.run_results_dir.joinpath(*parts)
 
+    def _load_test_thresholds(self) -> tuple[float, float]:
+        """Decision thresholds from the test split (calculate_metrics step).
+
+        These are the leakage-free thresholds inference must apply. The job runs
+        calculate_metrics before inference, so the file normally exists; if it is
+        missing (e.g. an inference-only call) we fail loudly rather than silently
+        recomputing on the inference data.
+        """
+        path = self._processed("model_parameters_test.json")
+        if not path.is_file():
+            raise FileNotFoundError(
+                f"Missing {path.name}: run the 'calculate_metrics' step before "
+                f"inference so the test-split thresholds are available."
+            )
+        params = loader.load_json(path)
+        return float(params["th_mort"]), float(params["th_disch"])
+
     # --- step 1: prepare all data artifacts ---------------------------------
     def prepare_data(self, data_filename: str) -> None:
         """Build every artifact the retraining needs from the raw dataset.
@@ -151,6 +168,12 @@ class PADSPipeline:
 
     # --- step 2: retrain models --------------------------------------------
     def retrain_models(self) -> None:
+        if self.config.retrain_type == "original":
+            raise ValueError(
+                "retrain_type='original' is evaluation-only (the shipped base "
+                "model); it cannot be retrained. Use it with calculate_metrics "
+                "and inference to baseline the off-the-shelf model instead."
+            )
         # New pipeline iteration -> start with a fresh parent linkage.
         tracking.clear_parent_run_id(self.config.base_path)
         rt = self.config.retrain_type
@@ -308,6 +331,20 @@ class PADSPipeline:
             tracking.log_artifact(self._results("images", "roc_combined.png"),
                                   artifact_path="metrics")
 
+            # Per-sample test predictions, so the app can redraw the ROC in JS
+            # (long format: mortality and discharge test sets differ in length).
+            # Logged as both CSV (human-readable) and Parquet (the app reads this
+            # — smaller download + faster parse).
+            metrics_df = pd.DataFrame({
+                "model": ["mortality"] * len(mort_pred) + ["discharge"] * len(disch_pred),
+                "prob": np.concatenate([mort_pred, disch_pred]),
+                "gt": np.concatenate([mort_gt, disch_gt]),
+            })
+            metrics_df.to_csv(self._results("results_metrics.csv"), index=False)
+            metrics_df.to_parquet(self._results("results_metrics.parquet"), index=False)
+            tracking.log_artifact(self._results("results_metrics.csv"), artifact_path="metrics")
+            tracking.log_artifact(self._results("results_metrics.parquet"), artifact_path="metrics")
+
     # --- step 4: inference + errors ----------------------------------------
     def run_inference(
         self,
@@ -340,10 +377,15 @@ class PADSPipeline:
             disch_pred = disch_out["y_pred"][:, 1]
             disch_gt = np.hstack(disch_out["y_true"])
 
-            th_mort, th_disch = plot_roc_combined(
+            # Reuse the decision thresholds chosen on the test split (the run that
+            # produced roc_combined.png). Picking them from the inference data would
+            # leak its labels and inflate the metrics, so we never recompute here.
+            th_mort, th_disch = self._load_test_thresholds()
+            plot_roc_combined(
                 mort_pred, mort_gt, disch_pred, disch_gt,
                 out_dir=self._results("images"),
-                inference_type=test_type, threshold_method=threshold_method, save=True,
+                inference_type=test_type, threshold_method=threshold_method,
+                fixed_thresholds=(th_mort, th_disch), save=True,
             )
             m_metrics = evaluate(mort_gt, mort_pred, th_mort)
             d_metrics = evaluate(disch_gt, disch_pred, th_disch)
@@ -359,20 +401,28 @@ class PADSPipeline:
             errors = compute_errors(
                 self._data(data_filename), dataset,
                 mort_pred, mort_gt, disch_pred, disch_gt,
-                params, out_path=self._results("final_result.csv"),
+                params, out_path=self._results("results_inference.csv"),
             )
+            # Parquet mirror of results_inference.csv — the app reads this for the
+            # ROC/error charts (smaller download + faster parse than the CSV).
+            errors.to_parquet(self._results("results_inference.parquet"), index=False)
             plot_error(errors, out_dir=self._results("images"))
 
             tracking.log_metrics({
                 f"inf/{test_type}/mort_auc": m_metrics.auc,
                 f"inf/{test_type}/mort_f1": m_metrics.f1,
+                f"inf/{test_type}/mort_precision": m_metrics.precision,
+                f"inf/{test_type}/mort_recall": m_metrics.recall,
                 f"inf/{test_type}/disch_auc": d_metrics.auc,
                 f"inf/{test_type}/disch_f1": d_metrics.f1,
+                f"inf/{test_type}/disch_precision": d_metrics.precision,
+                f"inf/{test_type}/disch_recall": d_metrics.recall,
                 f"inf/{test_type}/mean_error": float(errors["error"].mean()),
                 f"inf/{test_type}/critical_error_rate": float((errors["error"] == 3).mean()),
             })
             tracking.log_artifact(params_file, artifact_path="inference")
-            tracking.log_artifact(self._results("final_result.csv"), artifact_path="inference")
+            tracking.log_artifact(self._results("results_inference.csv"), artifact_path="inference")
+            tracking.log_artifact(self._results("results_inference.parquet"), artifact_path="inference")
             for img in ("roc_combined", "barplot_error", "heatmap_error"):
                 p = self._results("images", f"{img}_{test_type}.png" if img == "roc_combined" else f"{img}.png")
                 tracking.log_artifact(p, artifact_path="inference")

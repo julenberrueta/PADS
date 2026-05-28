@@ -27,7 +27,7 @@ $ErrorActionPreference = "Stop"
 
 # 1. Make sure uv is available.
 if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
-    Write-Host "uv not found — installing it to %USERPROFILE%\.local\bin..." -ForegroundColor Cyan
+    Write-Host "uv not found - installing it to %USERPROFILE%\.local\bin..." -ForegroundColor Cyan
     Invoke-RestMethod https://astral.sh/uv/install.ps1 | Invoke-Expression
 }
 $env:Path = "$env:USERPROFILE\.local\bin;$env:Path"
@@ -45,7 +45,7 @@ if (-not (Test-Path .env)) {
     if (Test-Path .env.example) {
         Copy-Item .env.example .env
         Write-Host ""
-        Write-Host "Created .env from .env.example — edit it to fill in your MLflow credentials." -ForegroundColor Yellow
+        Write-Host "Created .env from .env.example - edit it to fill in your MLflow credentials." -ForegroundColor Yellow
     }
 }
 

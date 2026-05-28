@@ -22,10 +22,22 @@
     <section class="card">
       <h2>1 · Dataset</h2>
       <div id="dropzone" class="dropzone">
-        <p>Drag &amp; drop your <strong>.csv</strong> / <strong>.parquet</strong> here, or click to browse</p>
-        <input type="file" id="fileInput" accept=".csv,.parquet" hidden />
+        <p>Drag &amp; drop your <strong>.csv</strong> / <strong>.parquet</strong> / <strong>.xlsx</strong> / <strong>.pkl</strong> here, or click to browse</p>
+        <input type="file" id="fileInput" accept=".csv,.parquet,.xlsx,.pkl,.pickle" hidden />
       </div>
       <div id="validation" class="validation hidden"></div>
+    </section>
+
+    <!-- Baseline: evaluate the shipped base model before retraining -->
+    <section class="card">
+      <h2>Baseline</h2>
+      <label class="baseline-toggle">
+        <input type="checkbox" id="evaluateOriginal" checked />
+        Evaluate the <strong>original model</strong> first (no retraining)
+      </label>
+      <p class="hint">Scores the off-the-shelf base model on your test split — using the original
+        MIMIC-IV normalizers it was pretrained with — so you can compare the retrained models against it.
+        Shows up as an <strong>ORIGINAL</strong> tab in metrics &amp; results.</p>
     </section>
 
     <!-- 2. Training options -->
@@ -44,16 +56,33 @@
         <label>Learning rate <input type="number" id="learning_rate" value="0.00001" step="0.000001" min="0" /></label>
         <label>Seed <input type="number" id="seed" value="42" /></label>
       </div>
+
+      <label class="adv-toggle">
+        <input type="checkbox" id="advancedToggle" /> Advanced options
+      </label>
+      <fieldset id="advancedFields" class="advanced hidden">
+        <legend>Advanced</legend>
+        <p class="hint">Per-model learning rates and early stopping. Leave a learning rate empty to reuse the basic one above.</p>
+        <div class="grid">
+          <label>LR · mortality <input type="number" id="lr_mort" step="0.000001" min="0" placeholder="0.00001" /></label>
+          <label>LR · discharge <input type="number" id="lr_disch" step="0.000001" min="0" placeholder="0.00001" /></label>
+          <label>Early stopping patience <input type="number" id="early_stopping_patience" value="50" min="1" /></label>
+          <label>Normalizers
+            <select id="normalizer_source">
+              <option value="fitted" selected>Fitted to your data</option>
+              <option value="mimic_iv">Original (MIMIC-IV baseline)</option>
+            </select>
+          </label>
+        </div>
+      </fieldset>
+
       <details class="note">
-        <summary>Inference is evaluated on all four window types</summary>
+        <summary>Inference is evaluated over the whole ICU stay</summary>
         <ul>
           <li><strong>full</strong> — every hour of each stay from hour 47 onward (the whole trajectory).</li>
-          <li><strong>last_48h</strong> — only the last 48 h before discharge/death.</li>
-          <li><strong>last_96h</strong> — only the last 96 h.</li>
-          <li><strong>first_48h</strong> — only the first 48 h of the stay.</li>
         </ul>
       </details>
-      <button id="trainBtn" class="primary" disabled>Retrain</button>
+      <button id="trainBtn" class="primary" disabled>Run</button>
     </section>
 
     <!-- History -->
@@ -81,8 +110,17 @@
 
     <!-- 5. Results / artifacts -->
     <section class="card hidden" id="resultsCard">
-      <h2>5 · Results &amp; artifacts</h2>
+      <h2>5 · Results &amp; artifacts
+        <a id="downloadAllBtn" class="dl-all hidden" download>⬇ Download all (.zip)</a>
+      </h2>
       <div id="results"></div>
+    </section>
+
+    <!-- 6. Model comparison (only when at least one model was retrained) -->
+    <section class="card hidden" id="comparisonCard">
+      <h2>6 · Model comparison</h2>
+      <p class="hint">ROC of every retrained model against the original baseline, plus the mean error from inference.</p>
+      <div id="comparison"></div>
     </section>
   </main>
 

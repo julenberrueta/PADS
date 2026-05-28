@@ -12,24 +12,35 @@ from pads.data.schema import validate_dataset
 
 
 def load_dataframe(path: str | Path) -> pd.DataFrame:
-    """Load a dataframe from CSV or Parquet based on file extension.
-    
+    """Load a dataframe from CSV, Parquet, Excel, or pickle based on file extension.
+
     Automatically renames PatientID to stay_id if needed for compatibility.
     """
     path = Path(path)
     suffix = path.suffix.lower()
-    
+
     if suffix == '.parquet':
         df = pd.read_parquet(path)
     elif suffix in ['.csv', '.csv.gz', '.csv.bz2', '.csv.zip', '.csv.xz']:
         df = pd.read_csv(path)
+    elif suffix == '.xlsx':
+        df = pd.read_excel(path)  # needs openpyxl
+    elif suffix in ['.pkl', '.pickle']:
+        df = pd.read_pickle(path)
+        if not isinstance(df, pd.DataFrame):
+            raise ValueError(
+                f"Pickle did not contain a DataFrame (got {type(df).__name__})."
+            )
     else:
-        raise ValueError(f"Unsupported file format: {suffix}. Expected .csv or .parquet")
-    
+        raise ValueError(
+            f"Unsupported file format: {suffix}. "
+            "Expected .csv, .parquet, .xlsx, or .pkl/.pickle"
+        )
+
     # Auto-rename PatientID to stay_id for compatibility
     if 'PatientID' in df.columns and 'stay_id' not in df.columns:
         df = df.rename(columns={'PatientID': 'stay_id'})
-    
+
     return df
 
 

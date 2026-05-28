@@ -48,8 +48,9 @@ def _build_parser() -> argparse.ArgumentParser:
                    choices=["full", "last_48h", "last_96h", "first_48h"],
                    help="default from PADSConfig (full)")
     p.add_argument("--retrain_type", default=None,
-                   choices=["full", "dense", "lstm", "scratch"],
-                   help="freezing strategy; default from PADSConfig")
+                   choices=["full", "dense", "lstm", "scratch", "original"],
+                   help="freezing strategy; default from PADSConfig. 'original' is "
+                        "evaluation-only (base model, no retraining).")
     p.add_argument("--seed", default=None, type=int, help="default from PADSConfig (42)")
     p.add_argument("--epochs", default=None, type=int, help="default from PADSConfig (1000)")
     p.add_argument("--batch_size", default=None, type=int, help="default from PADSConfig (100)")
@@ -57,6 +58,16 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="mortality LR; default from PADSConfig (1e-5)")
     p.add_argument("--learning_rate_disch", default=None, type=float,
                    help="discharge LR; default from PADSConfig (1e-5)")
+    p.add_argument("--early_stopping_patience", default=None, type=int,
+                   help="epochs without val improvement before stopping; default from PADSConfig (50)")
+    p.add_argument("--mort_normalizer", default=None, type=str,
+                   help="mortality normalizer filename in <base_path>/normalizers/; default from PADSConfig")
+    p.add_argument("--disch_normalizer", default=None, type=str,
+                   help="discharge normalizer filename in <base_path>/normalizers/; default from PADSConfig")
+    p.add_argument("--inference_mort_model", default=None, type=str,
+                   help="mortality model filename to evaluate; default derived from retrain_type")
+    p.add_argument("--inference_disch_model", default=None, type=str,
+                   help="discharge model filename to evaluate; default derived from retrain_type")
     return p
 
 
@@ -78,6 +89,11 @@ def main(argv: list[str] | None = None) -> int:
             "batch_size": args.batch_size,
             "learning_rate_mort": args.learning_rate_mort,
             "learning_rate_disch": args.learning_rate_disch,
+            "early_stopping_patience": args.early_stopping_patience,
+            "mort_normalizer": args.mort_normalizer,
+            "disch_normalizer": args.disch_normalizer,
+            "inference_mort_model": args.inference_mort_model,
+            "inference_disch_model": args.inference_disch_model,
         }.items() if v is not None
     }
     config = PADSConfig(base_path=args.base_path, **overrides)

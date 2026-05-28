@@ -55,13 +55,25 @@ def plot_roc_combined(
     out_dir: str | Path,
     inference_type: str | None = None,
     threshold_method: ThresholdMethod = "min_distance",
+    fixed_thresholds: tuple[float, float] | None = None,
     save: bool = True,
 ) -> tuple[float, float]:
+    """Draw the combined mortality/discharge ROC and return the operating thresholds.
+
+    When ``fixed_thresholds`` is given (``(th_mort, th_disch)``), those are used as
+    the operating point instead of picking the optimum from this data. This is how
+    inference reuses the threshold chosen on the test split (see calculate_metrics):
+    the curve/AUC still reflect the inference data, but the marked point and the
+    metrics table are evaluated at the fixed, leakage-free threshold.
+    """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    th_m = optimal_threshold(threshold_method, mort_gt, mort_pred)
-    th_d = optimal_threshold(threshold_method, disch_gt, disch_pred)
+    if fixed_thresholds is not None:
+        th_m, th_d = fixed_thresholds
+    else:
+        th_m = optimal_threshold(threshold_method, mort_gt, mort_pred)
+        th_d = optimal_threshold(threshold_method, disch_gt, disch_pred)
     m = evaluate(mort_gt, mort_pred, th_m)
     d = evaluate(disch_gt, disch_pred, th_d)
 

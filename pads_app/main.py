@@ -12,7 +12,7 @@ from fastapi.templating import Jinja2Templates
 from pads.data.schema import DatasetValidationError, validate_dataset
 from pads_app import mlflow_api
 from pads_app.config import get_settings
-from pads_app.jobs import JobBusyError, TrainParams, manager
+from pads_app.jobs import NORMALIZER_SOURCES, JobBusyError, TrainParams, manager
 
 _HERE = Path(__file__).parent
 app = FastAPI(title="PADS Trainer")
@@ -47,10 +47,18 @@ async def api_validate(file: UploadFile):
 @app.post("/api/train")
 async def api_train(
     file: UploadFile,
-    retrain_types: str = Form(...),  # comma-separated, e.g. "full,scratch"
+    # Comma-separated, e.g. "full,scratch". May be empty for a baseline-only run;
+    # the "nothing to do" case is validated explicitly below (a required Form here
+    # would reject an empty value as missing before we can give a clear message).
+    retrain_types: str = Form(""),
     epochs: int = Form(1000),
     batch_size: int = Form(100),
-    learning_rate: float = Form(1e-5),
+    # Per-model learning rates. The basic UI sends the same value for both.
+    learning_rate_mort: float = Form(1e-5),
+    learning_rate_disch: float = Form(1e-5),
+    early_stopping_patience: int = Form(50),
+    normalizer_source: str = Form("fitted"),  # "fitted" | "mimic_iv"
+    evaluate_original: bool = Form(False),
     seed: int = Form(42),
 ):
     settings = get_settings()
@@ -62,8 +70,18 @@ async def api_train(
         raise HTTPException(status_code=422, detail=check["error"])
 
     types = [t.strip() for t in retrain_types.split(",") if t.strip()]
-    if not types:
-        raise HTTPException(status_code=422, detail="Select at least one retrain type.")
+    # A run needs something to do: at least one retrain type, or the baseline alone.
+    if not types and not evaluate_original:
+        raise HTTPException(
+            status_code=422,
+            detail="Select at least one retrain type, or enable the baseline evaluation.",
+        )
+
+    if normalizer_source not in NORMALIZER_SOURCES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"normalizer_source must be one of {NORMALIZER_SOURCES}.",
+        )
 
     # Persist the dataset where the pipeline expects it: <base_path>/data/.
     settings.data_dir.mkdir(parents=True, exist_ok=True)
@@ -74,7 +92,11 @@ async def api_train(
         retrain_types=types,
         epochs=epochs,
         batch_size=batch_size,
-        learning_rate=learning_rate,
+        learning_rate_mort=learning_rate_mort,
+        learning_rate_disch=learning_rate_disch,
+        early_stopping_patience=early_stopping_patience,
+        normalizer_source=normalizer_source,
+        evaluate_original=evaluate_original,
         seed=seed,
     )
     try:
@@ -137,6 +159,17 @@ def api_artifacts(run_id: str, path: str = ""):
     return {"artifacts": mlflow_api.list_artifacts(run_id, path)}
 
 
+@app.get("/api/runs/{run_id}/charts")
+def api_run_charts(run_id: str):
+    """ROC + error chart data for one run, so the UI can draw them in JS."""
+    if not get_settings().mlflow_enabled:
+        return {"roc": None, "error_bars": None, "error_heatmap": None}
+    try:
+        return mlflow_api.run_charts(run_id)
+    except Exception as exc:  # noqa: BLE001 - surface any MLflow/parse error
+        raise HTTPException(status_code=404, detail=f"Could not build charts: {exc}") from exc
+
+
 @app.get("/api/runs/{run_id}/download")
 def api_download(run_id: str, path: str):
     try:
@@ -146,6 +179,28 @@ def api_download(run_id: str, path: str):
     # Serve inline (no forced attachment) so images can be previewed/opened in
     # the browser; the frontend's `download` attribute handles actual downloads.
     return FileResponse(local)
+
+
+@app.get("/api/jobs/{job_id}/comparison")
+def api_job_comparison(job_id: str):
+    """ROC curves + mean error per model (original vs retrained) for one job."""
+    if not get_settings().mlflow_enabled:
+        return {"models": []}
+    return mlflow_api.job_comparison(job_id)
+
+
+@app.get("/api/jobs/{job_id}/download-all")
+def api_job_download_all(job_id: str):
+    """Bundle artifacts from every run of a job (models, images, metrics) into one .zip."""
+    try:
+        zip_path = mlflow_api.download_job_zip(job_id)
+    except Exception as exc:  # noqa: BLE001 - surface any MLflow error to the client
+        raise HTTPException(status_code=404, detail=f"Could not build archive: {exc}") from exc
+    return FileResponse(
+        zip_path,
+        media_type="application/zip",
+        filename=f"pads_job_{job_id}.zip",
+    )
 
 
 # --- helpers ----------------------------------------------------------------

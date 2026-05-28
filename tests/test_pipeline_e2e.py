@@ -109,7 +109,7 @@ def test_full_pipeline_smoke(project_dir_with_models: Path):
 
     assert (project_dir_with_models / "data" / "processed" / "model_parameters_test.json").is_file()
     assert (project_dir_with_models / "results" / "full" / "model_parameters_inference.json").is_file()
-    assert (project_dir_with_models / "results" / "full" / "final_result.csv").is_file()
+    assert (project_dir_with_models / "results" / "full" / "results_inference.csv").is_file()
     assert (project_dir_with_models / "results" / "full" / "images" / "roc_combined.png").is_file()
     assert (project_dir_with_models / "results" / "full" / "images" / "barplot_error.png").is_file()
     assert "error" in errors.columns

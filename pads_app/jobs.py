@@ -34,8 +34,24 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-# Inference is always run for every window type so the user can compare them.
-TEST_TYPES = ("full", "last_48h", "last_96h", "first_48h")
+# Inference runs over the whole ICU stay ("full"). The window-restricted variants
+# (last_48h/last_96h/first_48h) still exist in the CLI but are not run from the app.
+TEST_TYPES = ("full",)
+
+# Normalizer sources the UI can pick between. "fitted" uses the normalizers
+# prepare_data fits on the uploaded dataset (the PADSConfig defaults). "mimic_iv"
+# uses the committed reference baselines instead — these filenames must match the
+# .pkl files shipped in <base_path>/normalizers/.
+NORMALIZER_SOURCES = ("fitted", "mimic_iv")
+MIMIC_IV_MORT_NORMALIZER = "mimic_iv_normalizer.pkl"
+MIMIC_IV_DISCH_NORMALIZER = "mimic_iv_normalizer_disch.pkl"
+
+# The shipped base models (input to retraining; PADSConfig.retrain_*_model defaults).
+# The "original" baseline evaluates these as-is, with the mimic_iv normalizers they
+# were pretrained with, so it lands as its own comparable "original" results group.
+BASE_MORT_MODEL = "lstm_mortality_model.keras"
+BASE_DISCH_MODEL = "lstm_disch_model.keras"
+BASELINE_RETRAIN_TYPE = "original"
 
 
 @dataclass
@@ -44,7 +60,18 @@ class TrainParams:
     retrain_types: list[str]
     epochs: int = 1000
     batch_size: int = 100
-    learning_rate: float = 1e-5
+    # Per-model learning rates. The basic UI sets both to the same value; the
+    # advanced UI can split them. The CLI has always accepted them separately.
+    learning_rate_mort: float = 1e-5
+    learning_rate_disch: float = 1e-5
+    early_stopping_patience: int = 50
+    # "fitted" (default) or "mimic_iv"; see NORMALIZER_SOURCES above. Only affects
+    # which normalizer retrain/metrics/inference LOAD — prepare_data always fits
+    # the dataset-specific ones so the mimic_iv baselines are never overwritten.
+    normalizer_source: str = "fitted"
+    # When true, evaluate the shipped base model first (no retraining) as an
+    # "original" baseline to compare the retrained models against.
+    evaluate_original: bool = False
     seed: int = 42
 
     def to_dict(self) -> dict[str, Any]:
@@ -53,7 +80,11 @@ class TrainParams:
             "retrain_types": self.retrain_types,
             "epochs": self.epochs,
             "batch_size": self.batch_size,
-            "learning_rate": self.learning_rate,
+            "learning_rate_mort": self.learning_rate_mort,
+            "learning_rate_disch": self.learning_rate_disch,
+            "early_stopping_patience": self.early_stopping_patience,
+            "normalizer_source": self.normalizer_source,
+            "evaluate_original": self.evaluate_original,
             "seed": self.seed,
         }
 
@@ -86,8 +117,15 @@ class Job:
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "Job":
         import dataclasses
+        raw = dict(d["params"])
+        # Pre-split: runs created before per-model LR stored a single
+        # "learning_rate"; map it onto both so old history still shows a value.
+        if "learning_rate" in raw:
+            lr = raw.pop("learning_rate")
+            raw.setdefault("learning_rate_mort", lr)
+            raw.setdefault("learning_rate_disch", lr)
         known = {f.name for f in dataclasses.fields(TrainParams)}
-        params = {k: v for k, v in d["params"].items() if k in known}  # tolerate old keys
+        params = {k: v for k, v in raw.items() if k in known}  # tolerate old keys
         return cls(
             id=d["id"],
             params=TrainParams(**params),
@@ -264,10 +302,29 @@ class JobManager:
 # --- command construction ---------------------------------------------------
 def _step_labels(p: TrainParams) -> list[str]:
     labels = ["prepare_data"]
+    if p.evaluate_original:
+        # Baseline runs before any retraining: metrics + inference on the base model.
+        labels.append(f"calculate_metrics ({BASELINE_RETRAIN_TYPE})")
+        labels += [f"inference ({BASELINE_RETRAIN_TYPE}, {tt})" for tt in TEST_TYPES]
     for rt in p.retrain_types:
         labels += [f"retrain_models ({rt})", f"calculate_metrics ({rt})"]
         labels += [f"inference ({rt}, {tt})" for tt in TEST_TYPES]
     return labels
+
+
+def _normalizer_flags(p: TrainParams) -> list[str]:
+    """Override which normalizers retrain/metrics/inference LOAD.
+
+    Only emitted for the mimic_iv baselines; "fitted" leaves the PADSConfig
+    defaults in place. Never applied to prepare_data, which always *fits* the
+    dataset-specific normalizers — passing mimic_iv there would overwrite them.
+    """
+    if p.normalizer_source != "mimic_iv":
+        return []
+    return [
+        "--mort_normalizer", MIMIC_IV_MORT_NORMALIZER,
+        "--disch_normalizer", MIMIC_IV_DISCH_NORMALIZER,
+    ]
 
 
 def _commands(p: TrainParams) -> list[list[str]]:
@@ -277,17 +334,37 @@ def _commands(p: TrainParams) -> list[list[str]]:
         "--base_path", str(get_settings().base_path),
         "--seed", str(p.seed),
     ]
+    norm = _normalizer_flags(p)
     cmds: list[list[str]] = [base + ["--mode", "prepare_data"]]
+
+    if p.evaluate_original:
+        # Evaluate the off-the-shelf base model before retraining: point inference
+        # at the base model files and always normalize with the mimic_iv baseline
+        # (the model was pretrained with it). Labelled retrain_type=original so it
+        # forms its own comparable results group; retrain_models is intentionally
+        # NOT run for it (there is nothing to retrain).
+        baseline = [
+            "--retrain_type", BASELINE_RETRAIN_TYPE,
+            "--inference_mort_model", BASE_MORT_MODEL,
+            "--inference_disch_model", BASE_DISCH_MODEL,
+            "--mort_normalizer", MIMIC_IV_MORT_NORMALIZER,
+            "--disch_normalizer", MIMIC_IV_DISCH_NORMALIZER,
+        ]
+        cmds.append(base + ["--mode", "calculate_metrics"] + baseline)
+        for tt in TEST_TYPES:
+            cmds.append(base + ["--mode", "inference", "--test_type", tt] + baseline)
+
     for rt in p.retrain_types:
         cmds.append(base + [
             "--mode", "retrain_models", "--retrain_type", rt,
             "--epochs", str(p.epochs), "--batch_size", str(p.batch_size),
-            "--learning_rate_mort", str(p.learning_rate),
-            "--learning_rate_disch", str(p.learning_rate),
-        ])
-        cmds.append(base + ["--mode", "calculate_metrics", "--retrain_type", rt])
+            "--learning_rate_mort", str(p.learning_rate_mort),
+            "--learning_rate_disch", str(p.learning_rate_disch),
+            "--early_stopping_patience", str(p.early_stopping_patience),
+        ] + norm)
+        cmds.append(base + ["--mode", "calculate_metrics", "--retrain_type", rt] + norm)
         for tt in TEST_TYPES:
-            cmds.append(base + ["--mode", "inference", "--retrain_type", rt, "--test_type", tt])
+            cmds.append(base + ["--mode", "inference", "--retrain_type", rt, "--test_type", tt] + norm)
     return cmds
 
 
