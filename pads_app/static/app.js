@@ -67,6 +67,13 @@ async function handleFile(file) {
   if (data.ok) {
     box.classList.add("ok");
     box.textContent = `✓ Valid dataset — ${data.rows} rows` + (data.stays ? `, ${data.stays} stays` : "");
+    if (data.dropped_stays > 0) {
+      const warn = document.createElement("div");
+      warn.className = "badge warn";
+      warn.style.marginTop = "0.5rem";
+      warn.textContent = `⚠ ${data.dropped_stays} stay(s) will be dropped: missing icu_expire_flag.`;
+      box.appendChild(warn);
+    }
     datasetValid = true;
     $("trainBtn").disabled = false;
   } else {

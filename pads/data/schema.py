@@ -83,4 +83,13 @@ def validate_dataset(path: str | Path) -> pd.DataFrame:
     if non_numeric:
         raise DatasetValidationError(f"Non-numeric mandatory columns: {non_numeric}")
 
+    # icu_expire_flag is the mortality label. A missing value can't be imputed,
+    # so stays with a NaN flag are dropped later (in prepare_data) with a notice.
+    # Here we only reject genuinely invalid (non-binary, non-NaN) values.
+    bad_values = sorted({float(v) for v in df["icu_expire_flag"].dropna().unique() if v not in (0, 1)})
+    if bad_values:
+        raise DatasetValidationError(
+            f"icu_expire_flag must be 0 or 1; found other values: {bad_values[:5]}."
+        )
+
     return df

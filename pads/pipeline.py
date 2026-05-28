@@ -126,7 +126,17 @@ class PADSPipeline:
         only load the .pkl files) can report which raw dataset produced them.
         """
         data_path = self._data(data_filename)
+        # Fail fast on schema problems (e.g. non-binary icu_expire_flag).
+        validate_dataset(data_path)
         df = loader.load_raw_dataset(data_path)
+
+        # The mortality label can't be imputed: drop whole stays whose
+        # icu_expire_flag is missing (with a notice) rather than guess it.
+        dropped = df.loc[df["icu_expire_flag"].isna(), "stay_id"].dropna().unique()
+        if len(dropped):
+            df = df[~df["stay_id"].isin(dropped)].reset_index(drop=True)
+            print(f"[PADS] Dropped {len(dropped)} stay(s) with missing icu_expire_flag "
+                  f"(e.g. {[int(s) for s in dropped[:5]]}).")
 
         # medians
         medians = df.loc[df["hr"] <= N_TIME_OFFSETS, IMPUTE_FIRST_ROW].median().to_dict()

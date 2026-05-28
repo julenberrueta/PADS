@@ -215,11 +215,18 @@ def _check_dataset(raw: bytes, filename: str) -> dict:
         tmp_path = Path(tmp.name)
     try:
         df = validate_dataset(tmp_path)
+        # Stays whose mortality label is missing will be dropped at prepare_data.
+        dropped = (
+            int(df.loc[df["icu_expire_flag"].isna(), "stay_id"].dropna().nunique())
+            if "icu_expire_flag" in df.columns and "stay_id" in df.columns
+            else 0
+        )
         return {
             "ok": True,
             "filename": Path(filename).name,
             "rows": int(len(df)),
             "stays": int(df["stay_id"].nunique()) if "stay_id" in df.columns else None,
+            "dropped_stays": dropped,
         }
     except DatasetValidationError as exc:
         return {"ok": False, "error": str(exc)}
