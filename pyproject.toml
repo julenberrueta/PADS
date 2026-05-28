@@ -7,7 +7,8 @@ name = "pads"
 version = "0.3.0"
 description = "PADS — ICU mortality and discharge prediction pipeline (LSTM)."
 readme = "README.md"
-requires-python = ">=3.10"
+# Capped below 3.14: TensorFlow only ships wheels up to cp313 (no 3.14 build yet).
+requires-python = ">=3.10,<3.14"
 license = { file = "LICENSE" }
 authors = [{ name = "Julen Berrueta" }]
 dependencies = [
