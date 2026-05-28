@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from pads.data.schema import DatasetValidationError, validate_dataset
+from pads.data.schema import N_TIME_OFFSETS, DatasetValidationError, validate_dataset
 from pads_app import mlflow_api
 from pads_app.config import get_settings
 from pads_app.jobs import NORMALIZER_SOURCES, JobBusyError, TrainParams, manager
@@ -215,18 +215,21 @@ def _check_dataset(raw: bytes, filename: str) -> dict:
         tmp_path = Path(tmp.name)
     try:
         df = validate_dataset(tmp_path)
-        # Stays whose mortality label is missing will be dropped at prepare_data.
-        dropped = (
-            int(df.loc[df["icu_expire_flag"].isna(), "stay_id"].dropna().nunique())
-            if "icu_expire_flag" in df.columns and "stay_id" in df.columns
-            else 0
-        )
+        # Mirror the pipeline's two patient filters so the UI can preview them:
+        #   1. prepare_data drops stays with a missing mortality label.
+        #   2. the window builders keep only stays with los (= max hr) >= 48 h.
+        los = df.groupby("stay_id")["hr"].max()
+        null_stays = set(df.loc[df["icu_expire_flag"].isna(), "stay_id"].dropna().unique())
+        kept = [s for s in los.index if s not in null_stays]
+        short_stays = [s for s in kept if los[s] < N_TIME_OFFSETS]
         return {
             "ok": True,
             "filename": Path(filename).name,
             "rows": int(len(df)),
-            "stays": int(df["stay_id"].nunique()) if "stay_id" in df.columns else None,
-            "dropped_stays": dropped,
+            "stays": int(df["stay_id"].nunique()),
+            "dropped_stays": len(null_stays),       # missing icu_expire_flag
+            "short_stays": len(short_stays),        # stay shorter than 48 h
+            "final_stays": len(kept) - len(short_stays),
         }
     except DatasetValidationError as exc:
         return {"ok": False, "error": str(exc)}

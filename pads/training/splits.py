@@ -14,12 +14,16 @@ def split_stays(stay_ids: list[int], *, test_size: float = 0.2, seed: int = 42):
 def build_xy_rolling(
     data: dict[int, np.ndarray], outcome: dict[int, int], stay_ids: list[int]
 ) -> tuple[np.ndarray, np.ndarray]:
-    """For mortality: one window per stay (the last one, time-reversed), one label."""
+    """For mortality: one window per stay (the last one), one label.
+
+    Fed most-recent-first (timestep 0 = newest hour) — the orientation the
+    shipped base model was trained on. See windowing.build_rolling_windows.
+    """
     keep = [s for s in stay_ids if s in data]
     X = np.empty((len(keep), N_TIME_OFFSETS, len(FEATURES)))
     y = np.empty((len(keep), 1))
     for i, sid in enumerate(keep):
-        X[i] = data[sid][-1, ::-1, 1:]
+        X[i] = data[sid][-1, :, 1:]
         y[i] = outcome[sid]
     return X, y
 

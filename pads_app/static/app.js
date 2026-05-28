@@ -74,6 +74,21 @@ async function handleFile(file) {
       warn.textContent = `⚠ ${data.dropped_stays} stay(s) will be dropped: missing icu_expire_flag.`;
       box.appendChild(warn);
     }
+    if (data.short_stays > 0) {
+      const info = document.createElement("div");
+      info.className = "badge info";
+      info.style.marginTop = "0.5rem";
+      info.textContent = `ℹ ${data.short_stays} stay(s) will be dropped: stay shorter than 48 h.`;
+      box.appendChild(info);
+    }
+    if (data.final_stays != null) {
+      const total = document.createElement("div");
+      total.className = "badge ok";
+      total.style.marginTop = "0.5rem";
+      total.style.fontWeight = "600";
+      total.textContent = `✓ ${data.final_stays} patient(s) will be used.`;
+      box.appendChild(total);
+    }
     datasetValid = true;
     $("trainBtn").disabled = false;
   } else {

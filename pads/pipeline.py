@@ -440,7 +440,7 @@ class PADSPipeline:
 
     # --- internal: prediction wrappers --------------------------------------
     def _predict_mortality(self, dataset: dict, model_filename: str) -> dict:
-        tmp_x = [dataset["data"][sid][:, ::-1, 1:] for sid in tqdm(dataset["data"])]
+        tmp_x = [dataset["data"][sid][:, :, 1:] for sid in tqdm(dataset["data"])]
         tmp_y = [
             np.full((dataset["data"][sid].shape[0], 1), dataset["mortality_outcome"][sid])
             for sid in dataset["data"]
@@ -501,8 +501,9 @@ class PADSPipeline:
         }
 
     def _fit_mortality_normalizer(self, data: dict[int, np.ndarray]) -> None:
-        # mortality normalizer is fit on time-reversed rolling windows (drop stay_id col)
-        X = np.vstack([arr[:, ::-1, 1:] for arr in data.values()])
+        # Fit on the rolling windows as stored (most-recent-first), dropping the
+        # stay_id column. Matches the orientation fed at train/inference time.
+        X = np.vstack([arr[:, :, 1:] for arr in data.values()])
         normalizer.fit_and_save(X, self._norm(self.config.mort_normalizer))
 
     def _fit_discharge_normalizer(self, data: dict[int, np.ndarray]) -> None:

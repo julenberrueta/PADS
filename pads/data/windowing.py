@@ -1,8 +1,9 @@
 """Time-series windowing for mortality and discharge datasets.
 
-Conventions preserved from code_v3 to keep saved pickles compatible:
-- mortality windows: time axis is *most-recent-first*  (consumer reverses with [::-1])
-- discharge  windows: time axis is *oldest-first*       (consumer uses as-is)
+Time-axis conventions (both fed to the model as stored, no further reversal):
+- mortality windows: *most-recent-first* (timestep 0 = newest hour) — the
+  orientation the shipped base model was trained on.
+- discharge  windows: *oldest-first* (ascending hr).
 """
 from __future__ import annotations
 

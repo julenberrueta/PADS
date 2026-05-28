@@ -57,6 +57,7 @@ main {
 .badge.ok { background: rgba(46, 204, 113, 0.2); color: var(--ok); }
 .badge.warn { background: rgba(241, 196, 15, 0.2); color: var(--warn); }
 .badge.running { background: rgba(79, 140, 255, 0.2); color: var(--accent); }
+.badge.info { background: rgba(79, 140, 255, 0.2); color: var(--accent); }
 .badge.failed { background: rgba(231, 76, 60, 0.2); color: var(--danger); }
 .badge.succeeded { background: rgba(46, 204, 113, 0.2); color: var(--ok); }
 .badge.cancelled, .badge.interrupted { background: rgba(241, 196, 15, 0.2); color: var(--warn); }
