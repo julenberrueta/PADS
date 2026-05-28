@@ -23,8 +23,11 @@ if (Test-Path .env) { . .\scripts\load_env.ps1 }
 if (-not $env:MLFLOW_TRACKING_URI) { $env:MLFLOW_TRACKING_URI = "http://127.0.0.1:5000" }
 
 Write-Host "Starting MLflow server on http://127.0.0.1:5000 ..." -ForegroundColor Cyan
+# --extra app on every `uv run` so the web deps (fastapi, uvicorn, jinja2,
+# python-multipart) stay installed — a plain `uv run` syncs to the default
+# deps only and would drop the app extra (multipart) between commands.
 $mlflow = Start-Process -PassThru -NoNewWindow uv -ArgumentList @(
-    "run", "mlflow", "server",
+    "run", "--extra", "app", "mlflow", "server",
     "--backend-store-uri", "sqlite:///mlflow.db",
     "--default-artifact-root", "./mlartifacts",
     "--host", "127.0.0.1", "--port", "5000"
@@ -32,7 +35,7 @@ $mlflow = Start-Process -PassThru -NoNewWindow uv -ArgumentList @(
 
 try {
     Write-Host "Starting PADS app on http://127.0.0.1:8000 ..." -ForegroundColor Green
-    uv run pads-app
+    uv run --extra app pads-app
 }
 finally {
     Write-Host "Stopping MLflow server ..." -ForegroundColor Yellow

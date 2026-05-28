@@ -23,8 +23,11 @@ fi
 [[ -f .env ]] && . scripts/load_env.sh
 export MLFLOW_TRACKING_URI="${MLFLOW_TRACKING_URI:-http://127.0.0.1:5000}"
 
+# --extra app on every `uv run` so the web deps (fastapi, uvicorn, jinja2,
+# python-multipart) stay installed — a plain `uv run` syncs to the default
+# deps only and would drop the app extra (multipart) between commands.
 echo "Starting MLflow server on http://127.0.0.1:5000 ..."
-uv run mlflow server \
+uv run --extra app mlflow server \
     --backend-store-uri sqlite:///mlflow.db \
     --default-artifact-root ./mlartifacts \
     --host 127.0.0.1 --port 5000 &
@@ -32,4 +35,4 @@ MLFLOW_PID=$!
 trap 'echo "Stopping MLflow server ..."; kill "$MLFLOW_PID" 2>/dev/null' EXIT
 
 echo "Starting PADS app on http://127.0.0.1:8000 ..."
-uv run pads-app
+uv run --extra app pads-app
