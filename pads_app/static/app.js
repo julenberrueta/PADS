@@ -617,6 +617,25 @@ async function buildResultBlock(run, parent) {
   });
   det.innerHTML = t + "</table>";
 
+  // Full parameter table (collapsible): every config value this run used —
+  // models, normalizers, seed, learning rates, etc. Lets you confirm from the
+  // UI exactly which normalizer/model produced a given AUC.
+  const params = run.params || {};
+  const paramKeys = Object.keys(params).sort();
+  if (paramKeys.length) {
+    let pd = block.querySelector("details.params");
+    if (!pd) {
+      pd = document.createElement("details");
+      pd.className = "params";
+      block.appendChild(pd);
+    }
+    let p = "<summary>All params</summary><table><tr><th>param</th><th>value</th></tr>";
+    paramKeys.forEach((k) => {
+      p += `<tr><td>${k}</td><td>${params[k]}</td></tr>`;
+    });
+    pd.innerHTML = p + "</table>";
+  }
+
   // ROC + error plots, drawn in JS (replaces the static PNGs). Fetched once per
   // run when it finishes — the underlying CSVs are immutable by then.
   if (run.status === "FINISHED" && !loadedArtifacts.has(run.run_id)) {

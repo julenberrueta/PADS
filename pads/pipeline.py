@@ -47,6 +47,17 @@ class PADSPipeline:
         trainer.set_global_seed(config.seed)
         trainer.configure_gpu()
 
+    def _log_config_params(self) -> None:
+        """Log the full resolved config to the active MLflow run.
+
+        Called at the start of every step's run so each one records exactly
+        which models, normalizers, seed, learning rates, etc. produced it —
+        otherwise metrics/inference runs left out the normalizer and model
+        filenames, making it impossible to tell from MLflow which normalizer a
+        given AUC was computed with.
+        """
+        tracking.log_params(self.config.model_dump(exclude={"base_path"}))
+
     def _common_tags(self, data_filename: str | None = None) -> dict[str, str]:
         """Run tags shared across steps, including dataset provenance.
 
@@ -198,6 +209,7 @@ class PADSPipeline:
     def retrain_mortality(self) -> None:
         rt = self.config.retrain_type
         with tracking.run(f"retrain_mortality_{rt}", model="mortality", **self._common_tags()):
+            self._log_config_params()
             data = loader.load_pkl(self._processed("lstm_last_48h_train.pkl"))
             outcome = loader.load_pkl(self._processed("icu_expire_flag_train.pkl"))
 
@@ -242,6 +254,7 @@ class PADSPipeline:
     def retrain_discharge(self) -> None:
         rt = self.config.retrain_type
         with tracking.run(f"retrain_discharge_{rt}", model="discharge", **self._common_tags()):
+            self._log_config_params()
             data = loader.load_pkl(self._processed("lstm_disch_3point_48h_train.pkl"))
             outcome = loader.load_pkl(self._processed("outcome_disch_3point_48h_train.pkl"))
 
@@ -293,6 +306,7 @@ class PADSPipeline:
             step="calculate_metrics",
             **self._common_tags(),
         ):
+            self._log_config_params()
             disch_ds = {
                 "data": loader.load_pkl(self._processed("lstm_disch_3point_48h_test.pkl")),
                 "disch_outcome": loader.load_pkl(self._processed("outcome_disch_3point_48h_test.pkl")),
@@ -372,6 +386,7 @@ class PADSPipeline:
             step="inference",
             **self._common_tags(data_filename),
         ):
+            self._log_config_params()
             tracking.log_params({"threshold_method": threshold_method,
                                  "test_type_active": test_type})
             validate_dataset(self._data(data_filename))

@@ -67,6 +67,7 @@ def job_runs(job_id: str) -> list[dict[str, Any]]:
                 "status": r.info.status,
                 "step": r.data.tags.get("step") or r.data.tags.get("model", ""),
                 "retrain_type": r.data.tags.get("retrain_type", ""),
+                "params": dict(r.data.params),
                 "metrics": {k: _json_float(v) for k, v in r.data.metrics.items()},
             }
         )

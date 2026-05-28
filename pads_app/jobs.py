@@ -49,8 +49,8 @@ MIMIC_IV_DISCH_NORMALIZER = "mimic_iv_normalizer_disch.pkl"
 # The shipped base models (input to retraining; PADSConfig.retrain_*_model defaults).
 # The "original" baseline evaluates these as-is, with the mimic_iv normalizers they
 # were pretrained with, so it lands as its own comparable "original" results group.
-BASE_MORT_MODEL = "lstm_mortality_model.keras"
-BASE_DISCH_MODEL = "lstm_disch_model.keras"
+BASE_MORT_MODEL = "lstm_mortality_model_v2.keras"
+BASE_DISCH_MODEL = "lstm_disch_model_v2.keras"
 BASELINE_RETRAIN_TYPE = "original"
 
 
@@ -339,17 +339,19 @@ def _commands(p: TrainParams) -> list[list[str]]:
 
     if p.evaluate_original:
         # Evaluate the off-the-shelf base model before retraining: point inference
-        # at the base model files and always normalize with the mimic_iv baseline
-        # (the model was pretrained with it). Labelled retrain_type=original so it
-        # forms its own comparable results group; retrain_models is intentionally
-        # NOT run for it (there is nothing to retrain).
+        # at the base model files. The normalizer MUST match the one the base model
+        # was trained with, so it follows the same normalizer_source as the retrain
+        # path (via _normalizer_flags): "mimic_iv" for the genuinely MIMIC-pretrained
+        # shipped models, "fitted" when the base models were themselves retrained on
+        # this dataset's fitted normalizers. A mismatch here scales the inputs
+        # differently than at training time and collapses AUC to ~0.5.
+        # Labelled retrain_type=original so it forms its own comparable results
+        # group; retrain_models is intentionally NOT run (nothing to retrain).
         baseline = [
             "--retrain_type", BASELINE_RETRAIN_TYPE,
             "--inference_mort_model", BASE_MORT_MODEL,
             "--inference_disch_model", BASE_DISCH_MODEL,
-            "--mort_normalizer", MIMIC_IV_MORT_NORMALIZER,
-            "--disch_normalizer", MIMIC_IV_DISCH_NORMALIZER,
-        ]
+        ] + norm
         cmds.append(base + ["--mode", "calculate_metrics"] + baseline)
         for tt in TEST_TYPES:
             cmds.append(base + ["--mode", "inference", "--test_type", tt] + baseline)
