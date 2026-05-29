@@ -49,8 +49,8 @@ MIMIC_IV_DISCH_NORMALIZER = "mimic_iv_normalizer_disch.pkl"
 # The shipped base models (input to retraining; PADSConfig.retrain_*_model defaults).
 # The "original" baseline evaluates these as-is, with the mimic_iv normalizers they
 # were pretrained with, so it lands as its own comparable "original" results group.
-BASE_MORT_MODEL = "lstm_mortality_model_v2.keras"
-BASE_DISCH_MODEL = "lstm_disch_model_v2.keras"
+BASE_MORT_MODEL = "lstm_mortality_model.keras"
+BASE_DISCH_MODEL = "lstm_mortality_model.keras"
 BASELINE_RETRAIN_TYPE = "original"
 
 
