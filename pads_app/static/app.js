@@ -704,8 +704,8 @@ async function appendRunCharts(runId, block) {
   }
 }
 
-// ROC datasets for one run: mortality + discharge curves, their operating-point
-// dots, and the chance diagonal.
+// ROC datasets for one run: mortality + discharge curves and the chance
+// diagonal. (The per-threshold operating-point dots were removed by request.)
 function rocPairDatasets(roc) {
   const sets = [];
   for (const [key, name, color] of [["mort", "Mortality", "#e74c3c"], ["disch", "Discharge", "#4f8cff"]]) {
@@ -717,13 +717,6 @@ function rocPairDatasets(roc) {
       borderColor: color, backgroundColor: "transparent",
       borderWidth: 2, pointRadius: 0, tension: 0,
     });
-    if (r.op) {
-      sets.push({
-        type: "scatter", label: `thr ${r.op.threshold.toFixed(2)}`,
-        data: [{ x: r.op.fpr, y: r.op.tpr }],
-        backgroundColor: color, borderColor: "#fff", borderWidth: 2, pointRadius: 6,
-      });
-    }
   }
   sets.push({
     label: "chance", data: [{ x: 0, y: 0 }, { x: 1, y: 1 }],
