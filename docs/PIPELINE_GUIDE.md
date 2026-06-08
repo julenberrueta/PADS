@@ -595,7 +595,7 @@ Use this for one-off runs, debugging a single step, or production runs. To compa
 | `learning_rate_disch`       | `1e-5`                             |  |
 | `epochs`                    | `1000`                             |  |
 | `batch_size`                | `100`                              |  |
-| `early_stopping_patience`   | `50`                               |  |
+| `early_stopping_patience`   | `20`                               |  |
 | `parallel`                  | `True`                             | currently unused (kept for API stability) |
 | `n_jobs`                    | `20`                               | currently unused |
 | `seed`                      | `42`                               | applied to Python, NumPy, TF |

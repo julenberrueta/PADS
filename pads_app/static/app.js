@@ -8,6 +8,11 @@ let liveMode = false; // true while watching a running job (enables fail popups)
 let charts = {}; // canvasId -> Chart instance
 let loadedArtifacts = new Set(); // run_ids whose artifacts were already fetched
 let comparisonRenderedCount = 0; // finished inference runs already in the comparison
+let comparisonModels = []; // cached comparison data so the test-type filter repaints without refetch
+let comparisonTestType = null; // inference window currently shown in the comparison
+let selectedModel = null; // retrain type shown in both Retrain (4) and Results (5)
+let historyExpanded = false; // History shows the latest HISTORY_PAGE runs until expanded
+const HISTORY_PAGE = 10;
 
 const $ = (id) => document.getElementById(id);
 
@@ -122,8 +127,10 @@ $("trainBtn").addEventListener("click", async () => {
   // Empty per-model LR fields reuse the basic learning rate.
   const lrMort = advanced ? ($("lr_mort").value || basicLR) : basicLR;
   const lrDisch = advanced ? ($("lr_disch").value || basicLR) : basicLR;
-  const esp = advanced ? $("early_stopping_patience").value : 50;
+  const esp = advanced ? $("early_stopping_patience").value : 20;
+  const monitorMetric = advanced ? $("monitor_metric").value : "loss";
   const normSrc = advanced ? $("normalizer_source").value : "fitted";
+  const thrMethod = advanced ? $("threshold_method").value : "precision_recall";
 
   const fd = new FormData();
   fd.append("file", selectedFile);
@@ -133,7 +140,9 @@ $("trainBtn").addEventListener("click", async () => {
   fd.append("learning_rate_mort", lrMort);
   fd.append("learning_rate_disch", lrDisch);
   fd.append("early_stopping_patience", esp);
+  fd.append("monitor_metric", monitorMetric);
   fd.append("normalizer_source", normSrc);
+  fd.append("threshold_method", thrMethod);
   fd.append("evaluate_original", evaluateOriginal);
   fd.append("seed", $("seed").value);
 
@@ -148,6 +157,9 @@ $("trainBtn").addEventListener("click", async () => {
     return showModal("Could not start training", String(err.message || err));
   }
   openJob(job.id, true);
+  // Re-enable straight away so more runs can be queued while this one is busy.
+  // A submission while another job is active comes back as "queued".
+  $("trainBtn").disabled = !datasetValid;
 });
 
 $("cancelBtn").addEventListener("click", async () => {
@@ -171,11 +183,19 @@ async function loadHistory() {
     return;
   }
   ul.innerHTML = "";
-  jobs.forEach((job) => {
+  // Show only the latest HISTORY_PAGE runs until the user expands the list.
+  const visible = historyExpanded ? jobs : jobs.slice(0, HISTORY_PAGE);
+  visible.forEach((job) => {
     const li = document.createElement("li");
     li.className = "job-item" + (job.id === activeJobId ? " active" : "");
-    li.addEventListener("click", () => openJob(job.id, job.status === "running"));
+    // Poll live for both running and queued jobs (a queued one will flip to
+    // running on its own once the slot frees, then stream as usual).
+    const liveStatus = job.status === "running" || job.status === "queued";
     const when = job.created_at.replace("T", " ").replace("+00:00", " UTC");
+
+    const row = document.createElement("div");
+    row.className = "ji-row";
+    row.addEventListener("click", () => openJob(job.id, liveStatus));
 
     const left = document.createElement("div");
     left.className = "ji-left";
@@ -186,12 +206,11 @@ async function loadHistory() {
       `<span class="badge ${job.status}">${job.status}</span>` +
       `<span>${job.params.data_filename} · [${labels.join(", ")}]</span>`;
 
+    // Row shows just the timestamp; the parameters live in the dropdown below
+    // and only for the selected run.
     const right = document.createElement("div");
     right.className = "ji-right";
-    // One LR if both models share it, else "mort/disch".
-    const lrM = job.params.learning_rate_mort, lrD = job.params.learning_rate_disch;
-    const lr = lrM === lrD ? lrM : `${lrM}/${lrD}`;
-    right.textContent = `${when} · ${job.params.epochs} epochs · lr ${lr}`;
+    right.textContent = when;
 
     const del = document.createElement("button");
     del.className = "ghost del";
@@ -202,9 +221,64 @@ async function loadHistory() {
       deleteJob(job.id);
     });
 
-    li.append(left, right, del);
+    row.append(left, right, del);
+    li.appendChild(row);
+
+    // Selected run only: drop its parameters down just below the row.
+    if (job.id === activeJobId) {
+      const params = document.createElement("div");
+      params.className = "ji-params";
+      params.innerHTML = historyParamsHtml(job);
+      li.appendChild(params);
+    }
+
     ul.appendChild(li);
   });
+
+  // "Show more / less" toggle when there are more than one page of runs.
+  if (jobs.length > HISTORY_PAGE) {
+    const li = document.createElement("li");
+    li.className = "show-more";
+    const btn = document.createElement("button");
+    btn.className = "ghost";
+    btn.textContent = historyExpanded
+      ? "Show less"
+      : `Show more (${jobs.length - HISTORY_PAGE} more)`;
+    btn.addEventListener("click", () => {
+      historyExpanded = !historyExpanded;
+      loadHistory();
+    });
+    li.appendChild(btn);
+    ul.appendChild(li);
+  }
+}
+
+// Parameters of a History run, as a compact key/value grid (the dropdown shown
+// under the selected run). Training params only apply when something was retrained;
+// an original-only run just shows the evaluation-relevant fields.
+function historyParamsHtml(job) {
+  const p = job.params;
+  const card = (k, v) => `<div class="lb-param"><span class="k">${k}</span><span class="v">${v}</span></div>`;
+  const cards = [];
+  if (p.retrain_types.length) {
+    const lr = p.learning_rate_mort === p.learning_rate_disch
+      ? p.learning_rate_mort : `${p.learning_rate_mort} / ${p.learning_rate_disch}`;
+    cards.push(card("Retrain types", p.retrain_types.join(", ")));
+    cards.push(card("Epochs", p.epochs));
+    cards.push(card("Batch size", p.batch_size));
+    cards.push(card("Learning rate", lr));
+    cards.push(card("Early stop", p.early_stopping_patience));
+    if (p.monitor_metric != null) cards.push(card("Optimize", p.monitor_metric));
+    cards.push(card("Normalizer", p.normalizer_source));
+    if (p.threshold_method != null) cards.push(card("Threshold", p.threshold_method));
+    cards.push(card("Seed", p.seed));
+  } else {
+    cards.push(card("Model", "Original baseline (no retraining)"));
+    cards.push(card("Normalizer", p.normalizer_source));
+    cards.push(card("Seed", p.seed));
+  }
+  if (p.evaluate_original && p.retrain_types.length) cards.push(card("Baseline", "original evaluated"));
+  return `<div class="lb-params">${cards.join("")}</div>`;
 }
 
 async function deleteJob(jobId) {
@@ -232,10 +306,19 @@ function openJob(jobId, live) {
   // Loaders shown until the first poll renders each section over them.
   $("charts").innerHTML = '<div class="loader">Cargando…</div>';
   $("results").innerHTML = '<div class="loader">Cargando…</div>';
+  // Reset the shared model selector for the new job (revealed once models load).
+  selectedModel = null;
+  $("modelTabs").innerHTML = "";
+  $("modelTabs").dataset.sig = "";
+  $("modelSelectorCard").classList.add("hidden");
   $("comparisonCard").classList.add("hidden");
   $("comparison").innerHTML = "";
   comparisonRenderedCount = 0;
-  $("steps").innerHTML = "";
+  comparisonModels = [];
+  comparisonTestType = null;
+  $("steps").innerHTML = '<li class="loader">Cargando…</li>';
+  // Hide status badge, Cancel and Logs until the first poll renders the run.
+  ["jobStatus", "cancelBtn", "logDetails"].forEach((id) => $(id).classList.add("hidden"));
   $("log").textContent = "";
   if (pollTimer) clearInterval(pollTimer);
   poll(jobId);
@@ -273,6 +356,8 @@ async function poll(jobId) {
 }
 
 function renderStatus(job) {
+  // First poll arrived: reveal the controls hidden behind the loader.
+  ["jobStatus", "cancelBtn", "logDetails"].forEach((id) => $(id).classList.remove("hidden"));
   const badge = $("jobStatus");
   badge.textContent = job.status;
   badge.className = "badge " + job.status;
@@ -371,39 +456,91 @@ const solidBgPlugin = {
   },
 };
 
-// Idempotent tab: returns the panel for `key`, creating button+panel once.
-// Existing tabs/selection are never destroyed, so live updates don't reset
-// which tab the user is looking at.
-function ensureTab(bar, panels, key, label) {
-  const panId = panels.id + "--" + key;
+// --- Shared model selector: one set of tabs (above Retrain) drives the visible
+// retrain type in BOTH section 4 (Retrain) and section 5 (Results). -----------
+
+// Ensure a bare panels container inside `host` (no per-section tab bar — the
+// shared #modelTabs bar controls visibility). Replaces any loader/placeholder.
+function ensurePanelsContainer(host, id) {
+  let panels = document.getElementById(id + "-panels");
+  if (!panels) {
+    host.innerHTML = `<div id="${id}-panels" class="tab-panels"></div>`;
+    panels = document.getElementById(id + "-panels");
+  }
+  return panels;
+}
+
+// Idempotent per-retrain-type panel inside a section's panels container. Tagged
+// with data-rt and hidden by default; applyModelSelection() reveals the active one.
+function ensureModelPanel(panels, prefix, rt) {
+  const panId = prefix + "-panels--" + rt;
   let panel = document.getElementById(panId);
-  if (panel) return panel;
-  const first = bar.children.length === 0;
-  const btn = document.createElement("button");
-  btn.className = "tab" + (first ? " active" : "");
-  btn.textContent = label;
-  panel = document.createElement("div");
-  panel.id = panId;
-  panel.className = "tab-panel" + (first ? "" : " hidden");
-  btn.addEventListener("click", () => {
-    [...bar.children].forEach((b) => b.classList.remove("active"));
-    [...panels.children].forEach((p) => p.classList.add("hidden"));
-    btn.classList.add("active");
-    panel.classList.remove("hidden");
-    Object.values(charts).forEach((c) => c.resize()); // fix 0-size in hidden panels
-  });
-  bar.appendChild(btn);
-  panels.appendChild(panel);
+  if (!panel) {
+    panel = document.createElement("div");
+    panel.id = panId;
+    panel.className = "tab-panel hidden";
+    panel.dataset.rt = rt;
+    panels.appendChild(panel);
+  }
   return panel;
 }
 
-function ensureTabSkeleton(host, id) {
-  let bar = document.getElementById(id + "-bar");
-  if (!bar) {
-    host.innerHTML = `<div id="${id}-bar" class="tab-bar"></div><div id="${id}-panels" class="tab-panels"></div>`;
-    bar = document.getElementById(id + "-bar");
+// Rebuild the shared model tabs from whatever retrain types currently have a
+// panel in either section (Results order first, then any Retrain-only types).
+// Cheap and guarded by a signature so the live poll doesn't flicker the bar.
+function syncModelTabs() {
+  const order = [];
+  const add = (rt) => { if (rt && !order.includes(rt)) order.push(rt); };
+  // Tabs follow the run order (Results order): the "original" baseline runs first,
+  // so it lands first; then the retrained types in the order they were launched.
+  const rsP = document.getElementById("rs-panels");
+  const mtP = document.getElementById("mt-panels");
+  if (rsP) [...rsP.children].forEach((p) => add(p.dataset.rt));
+  if (mtP) [...mtP.children].forEach((p) => add(p.dataset.rt));
+
+  const bar = $("modelTabs");
+  if (!order.length) {
+    bar.innerHTML = ""; bar.dataset.sig = "";
+    $("modelSelectorCard").classList.add("hidden");
+    return;
   }
-  return [bar, document.getElementById(id + "-panels")];
+  $("modelSelectorCard").classList.remove("hidden");
+  if (!selectedModel || !order.includes(selectedModel)) {
+    // Default to the first retrained model (one that has training curves) so
+    // section 4 isn't empty; fall back to the first tab (e.g. original-only runs).
+    selectedModel = order.find((rt) => document.getElementById("mt-panels--" + rt)) || order[0];
+  }
+
+  const sig = order.join(",") + "|" + selectedModel;
+  if (bar.dataset.sig !== sig) {
+    bar.innerHTML = "";
+    order.forEach((rt) => {
+      const btn = document.createElement("button");
+      btn.className = "tab" + (rt === selectedModel ? " active" : "");
+      btn.textContent = rt.toUpperCase();
+      btn.dataset.rt = rt;
+      btn.addEventListener("click", () => selectModel(rt));
+      bar.appendChild(btn);
+    });
+    bar.dataset.sig = sig;
+  }
+  applyModelSelection();
+}
+
+function selectModel(rt) {
+  selectedModel = rt;
+  [...$("modelTabs").children].forEach((b) => b.classList.toggle("active", b.dataset.rt === rt));
+  applyModelSelection();
+}
+
+// Show only the selected retrain type's panel in each section, hide the rest.
+function applyModelSelection() {
+  ["mt-panels", "rs-panels"].forEach((pid) => {
+    const panels = document.getElementById(pid);
+    if (!panels) return;
+    [...panels.children].forEach((p) => p.classList.toggle("hidden", p.dataset.rt !== selectedModel));
+  });
+  Object.values(charts).forEach((c) => c.resize()); // fix 0-size in just-shown panels
 }
 
 function modelLabel(run) {
@@ -431,10 +568,10 @@ function renderCharts(metricData) {
     host.innerHTML = '<p class="badge warn">MLflow is OFF — no live metrics. Models still train and are saved to disk.</p>';
     return;
   }
-  const [bar, panels] = ensureTabSkeleton(host, "mt");
+  const panels = ensurePanelsContainer(host, "mt");
   const { order, groups } = groupByType(metricData.runs, (r) => Object.keys(r.history || {}).length);
   for (const rt of order) {
-    const panel = ensureTab(bar, panels, rt, rt.toUpperCase());
+    const panel = ensureModelPanel(panels, "mt", rt);
     for (const run of groups[rt]) {
       const keys = Object.keys(run.history);
       const lossKeys = keys.filter((k) => ["loss", "val_loss"].includes(k.split("/").pop()));
@@ -455,7 +592,38 @@ function renderCharts(metricData) {
       if (lossKeys.length) upsertChart(lossId, "line", { datasets: lineDatasets(run.history, lossKeys) }, lineChartOpts("loss", "top", "Loss"));
       if (metricKeys.length) upsertChart(metId, "line", { datasets: lineDatasets(run.history, metricKeys) }, lineChartOpts("score", "right", "Metrics"));
     }
+    // One params table per retrain tab — the mortality and discharge runs share
+    // the same config, so render it once at the panel level (not per model).
+    if (groups[rt].length) renderParams(groups[rt][0], panel);
   }
+  syncModelTabs();
+}
+
+// Collapsible "All params" table for a retrain tab: every config value the run
+// used — epochs, learning rates, batch size, seed, normalizers, models, etc.
+// Rendered once per tab (mortality/discharge share the same config). Only retrain
+// runs receive the real training flags, so these match what was actually used
+// (the metrics/inference runs log config defaults instead).
+function renderParams(run, block) {
+  if (!block) return;
+  const params = run.params || {};
+  // Drop unset params (MLflow logs a None config value as the string "None"),
+  // e.g. fixed_th_mort/fixed_th_disch on retrained models — showing them is noise.
+  const paramKeys = Object.keys(params)
+    .filter((k) => params[k] != null && params[k] !== "None" && params[k] !== "")
+    .sort();
+  if (!paramKeys.length) return;
+  let pd = block.querySelector("details.params");
+  if (!pd) {
+    pd = document.createElement("details");
+    pd.className = "params";
+    block.appendChild(pd);
+  }
+  let p = "<summary>All params</summary><table><tr><th>param</th><th>value</th></tr>";
+  paramKeys.forEach((k) => {
+    p += `<tr><td>${k}</td><td>${params[k]}</td></tr>`;
+  });
+  pd.innerHTML = p + "</table>";
 }
 
 // --- 5. Final metrics (bar charts) + artifacts (with image preview) ---------
@@ -536,30 +704,108 @@ function renderResults(metricData) {
   }
   if (!order.length) {
     // Nothing to show yet; only paint the placeholder once (don't wipe later).
-    if (!document.getElementById("rs-bar") && !host.querySelector(".muted")) {
+    if (!document.getElementById("rs-panels") && !host.querySelector(".muted")) {
       host.innerHTML = '<p class="muted">No results yet.</p>';
     }
     return;
   }
 
-  // One tab per retrain type, created once; ensureTab keeps the open tab on
-  // updates and ensureTabSkeleton replaces any "No results yet" placeholder.
-  const [bar, panels] = ensureTabSkeleton(host, "rs");
+  // Per-retrain-type panels (no own tab bar — the shared #modelTabs selector
+  // drives which one is visible, in sync with section 4).
+  const panels = ensurePanelsContainer(host, "rs");
   for (const rt of order) {
-    const panel = ensureTab(bar, panels, rt, rt.toUpperCase());
+    const panel = ensureModelPanel(panels, "rs", rt);
     for (const run of groups[rt]) {
       ensureSectionHeader(panel, rt, run.step);
-      buildResultBlock(run, panel);
+      if (run.step === "inference") {
+        // One sub-tab per inference window (full / last_48h / …) instead of
+        // stacking the blocks, mirroring the per-model tabs in Retrain.
+        const [subBar, subPanels] = ensureInferenceTabs(panel, rt);
+        const subPanel = ensureInferenceTab(subBar, subPanels, inferenceTestType(run));
+        buildResultBlock(run, subPanel);
+      } else {
+        buildResultBlock(run, panel);
+      }
     }
   }
+  syncModelTabs();
 }
 
-async function buildResultBlock(run, parent) {
+// Nested tab skeleton for the Inference section of a retrain-type panel, created
+// once per retrain type. It appends to the panel (never wipes it — the panel
+// already holds the Metrics block + section headers).
+function ensureInferenceTabs(panel, rt) {
+  const barId = `inf-bar-${rt}`;
+  let bar = document.getElementById(barId);
+  if (!bar) {
+    const wrap = document.createElement("div");
+    wrap.className = "inf-tabs";
+    wrap.innerHTML = `<div id="${barId}" class="tab-bar"></div><div id="inf-panels-${rt}" class="tab-panels"></div>`;
+    panel.appendChild(wrap);
+    bar = document.getElementById(barId);
+  }
+  return [bar, document.getElementById(`inf-panels-${rt}`)];
+}
+
+// The inference window an inference run scored. Prefer the logged param; fall
+// back to parsing the run name "inference_<retrain_type>_<test_type>".
+function inferenceTestType(run) {
+  const p = run.params || {};
+  return p.test_type_active || p.test_type
+    || (run.run_name || "").replace(/^inference_[^_]+_/, "") || "full";
+}
+
+// Fixed display order for the inference sub-tabs; unknown windows go last.
+const INFERENCE_ORDER = ["full", "first_48h", "last_96h", "last_48h"];
+const inferenceRank = (tt) => {
+  const i = INFERENCE_ORDER.indexOf(tt);
+  return i === -1 ? INFERENCE_ORDER.length : i;
+};
+
+// Like ensureTab, but inserts the new tab at its canonical position (by
+// INFERENCE_ORDER) instead of appending — so the windows always read full →
+// first_48h → last_48h → last_96h regardless of which finished first.
+function ensureInferenceTab(bar, panels, tt) {
+  const panId = panels.id + "--" + tt;
+  let panel = document.getElementById(panId);
+  if (panel) return panel;
+  const first = bar.children.length === 0;
+  const btn = document.createElement("button");
+  btn.className = "tab" + (first ? " active" : "");
+  btn.textContent = tt.toUpperCase();
+  btn.dataset.tt = tt;
+  panel = document.createElement("div");
+  panel.id = panId;
+  panel.className = "tab-panel" + (first ? "" : " hidden");
+  btn.addEventListener("click", () => {
+    [...bar.children].forEach((b) => b.classList.remove("active"));
+    [...panels.children].forEach((p) => p.classList.add("hidden"));
+    btn.classList.add("active");
+    panel.classList.remove("hidden");
+    Object.values(charts).forEach((c) => c.resize()); // fix 0-size in hidden panels
+  });
+  // Insert before the first existing tab that ranks after this one (panels stay
+  // parallel to the bar, so the same index applies to both).
+  const refIdx = [...bar.children].findIndex((b) => inferenceRank(b.dataset.tt) > inferenceRank(tt));
+  if (refIdx === -1) {
+    bar.appendChild(btn);
+    panels.appendChild(panel);
+  } else {
+    bar.insertBefore(btn, bar.children[refIdx]);
+    panels.insertBefore(panel, panels.children[refIdx]);
+  }
+  return panel;
+}
+
+// `idPrefix` namespaces the DOM ids so the same run can be rendered in two places
+// at once (the live results section uses "", the Best-runs window uses "lb-")
+// without colliding on rblock-/bars-/roc- ids or the loadedArtifacts guard.
+async function buildResultBlock(run, parent, idPrefix = "") {
   const finalKeys = Object.keys(run.metrics).filter((k) => !k.startsWith("mort/") && !k.startsWith("disch/"));
 
   // Create the block (and its sub-nodes) once, then update in place on each poll
   // so the live refresh never tears down what the user is looking at.
-  const blockId = "rblock-" + run.run_id;
+  const blockId = idPrefix + "rblock-" + run.run_id;
   let block = document.getElementById(blockId);
   if (!block) {
     block = document.createElement("div");
@@ -578,7 +824,7 @@ async function buildResultBlock(run, parent) {
   // Lives in row 1, sharing it with the ROC chart (added once the run finishes).
   const bars = classificationBars(run.metrics);
   if (bars) {
-    const id = "bars-" + run.run_id;
+    const id = idPrefix + "bars-" + run.run_id;
     if (!document.getElementById(id)) {
       let row1 = block.querySelector(".result-row1");
       if (!row1) {
@@ -617,30 +863,11 @@ async function buildResultBlock(run, parent) {
   });
   det.innerHTML = t + "</table>";
 
-  // Full parameter table (collapsible): every config value this run used —
-  // models, normalizers, seed, learning rates, etc. Lets you confirm from the
-  // UI exactly which normalizer/model produced a given AUC.
-  const params = run.params || {};
-  const paramKeys = Object.keys(params).sort();
-  if (paramKeys.length) {
-    let pd = block.querySelector("details.params");
-    if (!pd) {
-      pd = document.createElement("details");
-      pd.className = "params";
-      block.appendChild(pd);
-    }
-    let p = "<summary>All params</summary><table><tr><th>param</th><th>value</th></tr>";
-    paramKeys.forEach((k) => {
-      p += `<tr><td>${k}</td><td>${params[k]}</td></tr>`;
-    });
-    pd.innerHTML = p + "</table>";
-  }
-
   // ROC + error plots, drawn in JS (replaces the static PNGs). Fetched once per
   // run when it finishes — the underlying CSVs are immutable by then.
-  if (run.status === "FINISHED" && !loadedArtifacts.has(run.run_id)) {
-    loadedArtifacts.add(run.run_id);
-    await appendRunCharts(run.run_id, block);
+  if (run.status === "FINISHED" && !loadedArtifacts.has(idPrefix + run.run_id)) {
+    loadedArtifacts.add(idPrefix + run.run_id);
+    await appendRunCharts(run.run_id, block, idPrefix);
   }
 }
 
@@ -648,7 +875,7 @@ const ERROR_COLORS = { 0: "#3ab06a", 1: "#f4c430", 2: "#ef8a3a", 3: "#e4572e" };
 
 // Per-run charts: ROC (metrics + inference), error-severity bars and the
 // predicted-vs-real bubble heatmap — all from the run's prediction CSV.
-async function appendRunCharts(runId, block) {
+async function appendRunCharts(runId, block, idPrefix = "") {
   const det = block.querySelector("details.metrics");
   const loading = document.createElement("div");
   loading.className = "loader";
@@ -677,29 +904,32 @@ async function appendRunCharts(runId, block) {
     }
     const col = document.createElement("div");
     col.className = "chart-col roc";
-    col.innerHTML = `<canvas id="roc-${runId}"></canvas>`;
+    col.innerHTML = `<canvas id="${idPrefix}roc-${runId}"></canvas>`;
     row1.appendChild(col);
-    upsertChart(`roc-${runId}`, "line", { datasets: rocPairDatasets(data.roc) },
+    upsertChart(`${idPrefix}roc-${runId}`, "line", { datasets: rocPairDatasets(data.roc) },
       rocChartOpts("ROC — Mortality & Discharge"), [solidBgPlugin]);
+    // Operating point shown next to the curve: fixed for the original model,
+    // the data-derived optimum for retrained ones (whatever produced this ROC).
+    col.insertAdjacentHTML("beforeend", rocThresholdCaption(data.roc));
   }
 
   // Row 2 (inference only): error-severity bars + predicted-vs-real heatmap.
   if (data.error_bars || data.error_heatmap) {
     const row2 = document.createElement("div");
     row2.className = "chart-row result-row2";
-    if (data.error_bars) row2.insertAdjacentHTML("beforeend", `<div class="chart-col roc"><canvas id="eb-${runId}"></canvas></div>`);
-    if (data.error_heatmap) row2.insertAdjacentHTML("beforeend", `<div class="chart-col roc"><canvas id="hm-${runId}"></canvas></div>`);
+    if (data.error_bars) row2.insertAdjacentHTML("beforeend", `<div class="chart-col roc"><canvas id="${idPrefix}eb-${runId}"></canvas></div>`);
+    if (data.error_heatmap) row2.insertAdjacentHTML("beforeend", `<div class="chart-col roc"><canvas id="${idPrefix}hm-${runId}"></canvas></div>`);
     block.insertBefore(row2, det);
     if (data.error_bars) {
       const eb = data.error_bars;
-      upsertChart(`eb-${runId}`, "bar",
+      upsertChart(`${idPrefix}eb-${runId}`, "bar",
         { labels: eb.groups.map(String),
           datasets: [{ data: eb.proportions, backgroundColor: eb.groups.map((g) => ERROR_COLORS[g] || "#888") }] },
         errorBarOpts(eb.mean), [solidBgPlugin, barValuePlugin]);
     }
     if (data.error_heatmap) {
       const h = heatmapData(data.error_heatmap);
-      upsertChart(`hm-${runId}`, "bubble", h.data, h.options, [solidBgPlugin, bubbleCountPlugin]);
+      upsertChart(`${idPrefix}hm-${runId}`, "bubble", h.data, h.options, [solidBgPlugin, bubbleCountPlugin]);
     }
   }
 }
@@ -723,6 +953,18 @@ function rocPairDatasets(roc) {
     borderColor: THEME.muted, borderWidth: 1, borderDash: [5, 5], pointRadius: 0,
   });
   return sets;
+}
+
+// Caption under a ROC chart with each model's decision threshold (the curve's
+// operating point). Empty string when no threshold is available for either model.
+function rocThresholdCaption(roc) {
+  const fmt = (r) => (r && r.op && r.op.threshold != null) ? r.op.threshold.toFixed(4) : null;
+  const m = fmt(roc.mort), d = fmt(roc.disch);
+  if (m == null && d == null) return "";
+  const parts = [];
+  if (m != null) parts.push(`<span><b style="color:#e74c3c">Mortality</b> ${m}</span>`);
+  if (d != null) parts.push(`<span><b style="color:#4f8cff">Discharge</b> ${d}</span>`);
+  return `<div class="roc-threshold">Optimal threshold · ${parts.join(" · ")}</div>`;
 }
 
 function errorBarOpts(mean) {
@@ -834,26 +1076,57 @@ async function renderComparison(jobId) {
   }
   if (jobId !== activeJobId) return;
 
-  const models = (data.models || []).filter((m) => m.mort && m.disch);
+  comparisonModels = (data.models || []).filter((m) => m.mort && m.disch);
   // Need at least one retrained model to compare against the baseline.
-  if (!models.some((m) => m.retrain_type !== "original")) return;
+  if (!comparisonModels.some((m) => m.retrain_type !== "original")) return;
+  paintComparison();
+}
 
+// Draw the comparison for the selected inference window. Models of other windows
+// are filtered out (comparing e.g. full vs last_96h ROCs would be apples-to-oranges).
+function paintComparison() {
+  const models = comparisonModels;
+  if (!models.length) return;
   $("comparisonCard").classList.remove("hidden");
   const host = $("comparison");
   // Build the skeleton once; later updates refresh the charts + table in place
   // so the section grows live as each retrained model finishes.
   if (!$("cmp-mort")) {
     host.innerHTML =
+      `<div class="cmp-filter"><span class="cmp-filter-label">Inference window</span>` +
+      `<div id="cmp-filter-bar" class="tab-bar"></div></div>` +
       `<div class="chart-row">` +
       `<div class="chart-col roc"><canvas id="cmp-mort"></canvas></div>` +
       `<div class="chart-col roc"><canvas id="cmp-disch"></canvas></div>` +
       `</div><div id="cmp-table"></div>`;
   }
-  upsertChart("cmp-mort", "line", { datasets: rocDatasets(models, "mort") }, rocChartOpts("Mortality ROC"), [solidBgPlugin]);
-  upsertChart("cmp-disch", "line", { datasets: rocDatasets(models, "disch") }, rocChartOpts("Discharge ROC"), [solidBgPlugin]);
+
+  // Available inference windows, ordered full → first_48h → last_48h → last_96h.
+  const testTypes = [...new Set(models.map((m) => m.test_type || "full"))]
+    .sort((a, b) => inferenceRank(a) - inferenceRank(b));
+  if (!comparisonTestType || !testTypes.includes(comparisonTestType)) comparisonTestType = testTypes[0];
+  const filterRow = host.querySelector(".cmp-filter");
+  filterRow.style.display = testTypes.length > 1 ? "" : "none"; // only worth showing with >1
+  const bar = $("cmp-filter-bar");
+  const sig = testTypes.join(",") + "|" + comparisonTestType;
+  if (bar.dataset.sig !== sig) {
+    bar.innerHTML = "";
+    testTypes.forEach((tt) => {
+      const btn = document.createElement("button");
+      btn.className = "tab" + (tt === comparisonTestType ? " active" : "");
+      btn.textContent = tt.toUpperCase();
+      btn.addEventListener("click", () => { comparisonTestType = tt; paintComparison(); });
+      bar.appendChild(btn);
+    });
+    bar.dataset.sig = sig;
+  }
+
+  const shown = models.filter((m) => (m.test_type || "full") === comparisonTestType);
+  upsertChart("cmp-mort", "line", { datasets: rocDatasets(shown, "mort") }, rocChartOpts("Mortality ROC"), [solidBgPlugin]);
+  upsertChart("cmp-disch", "line", { datasets: rocDatasets(shown, "disch") }, rocChartOpts("Discharge ROC"), [solidBgPlugin]);
 
   let t = "<table><tr><th>Model</th><th>Mortality AUC</th><th>Discharge AUC</th><th>Mean error</th></tr>";
-  models.forEach((m) => {
+  shown.forEach((m) => {
     t += `<tr><td>${m.retrain_type}</td>` +
       `<td>${m.mort.auc.toFixed(3)}</td>` +
       `<td>${m.disch.auc.toFixed(3)}</td>` +
@@ -909,15 +1182,15 @@ function rocChartOpts(title) {
 }
 
 // --- Download all: fetch the zip via JS so we can show a building state -----
-$("downloadAllBtn").addEventListener("click", async (e) => {
-  e.preventDefault();
-  const btn = e.currentTarget;
+// Shared by the live results section and the Best-runs window. `href` is the
+// job's download-all URL; `btn` gets a transient "building" state.
+async function downloadZip(href, btn) {
   if (btn.classList.contains("loading")) return;
   const label = btn.textContent;
   btn.classList.add("loading");
   btn.textContent = "⏳ Generando zip…";
   try {
-    const resp = await fetch(btn.href);
+    const resp = await fetch(href);
     if (!resp.ok) {
       const data = await resp.json().catch(() => ({}));
       throw new Error(detailToText(data.detail) || resp.statusText);
@@ -939,7 +1212,137 @@ $("downloadAllBtn").addEventListener("click", async (e) => {
     btn.classList.remove("loading");
     btn.textContent = label;
   }
+}
+
+$("downloadAllBtn").addEventListener("click", (e) => {
+  e.preventDefault();
+  downloadZip(e.currentTarget.href, e.currentTarget);
 });
+
+// --- Best runs window: every successful inference run ranked by mean error ---
+let lbSelectedRunId = null;
+
+$("openLeaderboard").addEventListener("click", () => {
+  $("leaderboard").classList.remove("hidden");
+  loadLeaderboard();
+});
+$("lbClose").addEventListener("click", () => $("leaderboard").classList.add("hidden"));
+$("lbRefresh").addEventListener("click", loadLeaderboard);
+// Click on the dim backdrop (but not the box) closes the window.
+$("leaderboard").addEventListener("click", (e) => {
+  if (e.target === $("leaderboard")) $("leaderboard").classList.add("hidden");
+});
+
+async function loadLeaderboard() {
+  const list = $("lbList");
+  list.innerHTML = '<li class="muted">Loading…</li>';
+  let runs;
+  try {
+    runs = await fetch("/api/successful-runs").then((r) => r.json()).then((d) => d.runs);
+  } catch {
+    list.innerHTML = '<li class="muted">Could not load runs.</li>';
+    return;
+  }
+  if (!runs.length) {
+    list.innerHTML = '<li class="muted">No successful runs yet.</li>';
+    $("lbDetails").innerHTML = '<p class="muted">Select a run on the left to see its results and download its artifacts.</p>';
+    return;
+  }
+  list.innerHTML = "";
+  runs.forEach((entry, i) => {
+    const li = document.createElement("li");
+    li.className = "lb-item" + (entry.run_id === lbSelectedRunId ? " active" : "");
+    const when = (entry.created_at || "").replace("T", " ").replace("+00:00", " UTC");
+    const crit = entry.critical_error_rate != null ? ` · crit ${entry.critical_error_rate.toFixed(3)}` : "";
+    li.innerHTML =
+      `<span class="lb-rank">${i + 1}</span>` +
+      `<div class="lb-main">` +
+      `<div><span class="lb-err">mean error ${entry.mean_error.toFixed(4)}</span>${crit}</div>` +
+      `<div class="lb-sub">${entry.retrain_type} · ${entry.test_type || "full"} · ${entry.data_filename || "?"} · ${when}</div>` +
+      `</div>`;
+    li.addEventListener("click", () => {
+      [...list.children].forEach((c) => c.classList.remove("active"));
+      li.classList.add("active");
+      renderLeaderboardDetails(entry);
+    });
+    list.appendChild(li);
+  });
+}
+
+async function renderLeaderboardDetails(entry) {
+  lbSelectedRunId = entry.run_id;
+  const host = $("lbDetails");
+  // Tear down this window's previous charts + artifact guards (lb- namespace) so
+  // each selection renders fresh without touching the live results section.
+  Object.keys(charts).filter((id) => id.startsWith("lb-")).forEach((id) => {
+    charts[id].destroy();
+    delete charts[id];
+  });
+  [...loadedArtifacts].filter((k) => k.startsWith("lb-")).forEach((k) => loadedArtifacts.delete(k));
+  host.innerHTML = "";
+
+  const when = (entry.created_at || "").replace("T", " ").replace("+00:00", " UTC");
+  const critFig = entry.critical_error_rate != null
+    ? `<div class="lb-figure"><span class="k">Critical error rate</span><span class="v">${entry.critical_error_rate.toFixed(4)}</span></div>`
+    : "";
+  const head = document.createElement("div");
+  head.className = "lb-detail-head";
+  head.innerHTML =
+    `<h3>${entry.run_name} <span class="badge succeeded">${entry.retrain_type}</span>` +
+    `<span class="badge info">${entry.test_type || "full"}</span></h3>` +
+    `<p class="lb-sub">${entry.data_filename || "?"} · ${when}</p>` +
+    `<div class="lb-figure"><span class="k">Mean error severity</span><span class="v good">${entry.mean_error.toFixed(4)}</span></div>` +
+    critFig;
+  const dl = document.createElement("button");
+  dl.className = "dl-all";
+  dl.textContent = "⬇ Download all (.zip)";
+  dl.addEventListener("click", () => downloadZip(`/api/jobs/${entry.job_id}/download-all`, dl));
+  head.appendChild(dl);
+  host.appendChild(head);
+
+  // Parameters used, shown next to the charts.
+  const paramsHtml = leaderboardParamsHtml(entry);
+  if (paramsHtml) {
+    const pSection = document.createElement("div");
+    pSection.innerHTML = `<p class="lb-section-label">Parameters</p>${paramsHtml}`;
+    host.appendChild(pSection);
+  }
+
+  const resultsEl = document.createElement("div");
+  resultsEl.innerHTML = '<p class="lb-section-label">Results</p>';
+  host.appendChild(resultsEl);
+  // Reuse the live results renderer with the "lb-" id namespace.
+  const run = {
+    run_id: entry.run_id, run_name: entry.run_name, status: "FINISHED",
+    step: "inference", retrain_type: entry.retrain_type, metrics: entry.metrics,
+  };
+  await buildResultBlock(run, resultsEl, "lb-");
+}
+
+// Compact key/value grid of the params a run used. The "original" baseline trains
+// nothing, so it only shows the evaluation-relevant fields.
+function leaderboardParamsHtml(entry) {
+  const p = entry.params || {};
+  const card = (k, v) => `<div class="lb-param"><span class="k">${k}</span><span class="v">${v}</span></div>`;
+  const cards = [];
+  if (entry.retrain_type === "original") {
+    cards.push(card("Model", "Shipped base (no retraining)"));
+    if (p.normalizer_source != null) cards.push(card("Normalizer", p.normalizer_source));
+    cards.push(card("Thresholds", "Fixed (published)"));
+  } else {
+    const lr = p.learning_rate_mort === p.learning_rate_disch
+      ? p.learning_rate_mort : `${p.learning_rate_mort} / ${p.learning_rate_disch}`;
+    if (p.epochs != null) cards.push(card("Epochs", p.epochs));
+    if (p.batch_size != null) cards.push(card("Batch size", p.batch_size));
+    if (p.learning_rate_mort != null) cards.push(card("Learning rate", lr));
+    if (p.early_stopping_patience != null) cards.push(card("Early stop", p.early_stopping_patience));
+    if (p.monitor_metric != null) cards.push(card("Optimize", p.monitor_metric));
+    if (p.normalizer_source != null) cards.push(card("Normalizer", p.normalizer_source));
+    if (p.threshold_method != null) cards.push(card("Threshold", p.threshold_method));
+    if (p.seed != null) cards.push(card("Seed", p.seed));
+  }
+  return cards.length ? `<div class="lb-params">${cards.join("")}</div>` : "";
+}
 
 // --- on load: show any past runs -------------------------------------------
 loadHistory();

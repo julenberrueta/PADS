@@ -74,6 +74,57 @@ def job_runs(job_id: str) -> list[dict[str, Any]]:
     return out
 
 
+def successful_inference_runs(jobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Finished inference runs from succeeded jobs, ranked by mean error (asc).
+
+    One entry per inference run (the original baseline + each retrained type)
+    across every successful job, so the UI can show a global leaderboard.
+    ``mean_error`` is the per-stay error severity averaged over the test cohort
+    (lower is better). ``jobs`` is the manager's public job list (passed in to
+    keep this module decoupled from the JobManager).
+    """
+    if not get_settings().mlflow_enabled:
+        return []
+    out: list[dict[str, Any]] = []
+    for job in jobs:
+        if job.get("status") != "succeeded":
+            continue
+        for run in job_runs(job["id"]):
+            if run.get("step") != "inference" or run.get("status") != "FINISHED":
+                continue
+            metrics = run["metrics"]
+            # test_type + mean error share the key inf/<test_type>/mean_error, so each
+            # inference window (full / last_48h / …) is its own ranked entry.
+            test_type, mean_error = None, None
+            for k, v in metrics.items():
+                if k.startswith("inf/") and k.endswith("/mean_error"):
+                    test_type = k[len("inf/"):-len("/mean_error")]
+                    mean_error = v
+                    break
+            if mean_error is None:
+                continue
+            crit = next((v for k, v in metrics.items() if k.endswith("/critical_error_rate")), None)
+            out.append(
+                {
+                    "job_id": job["id"],
+                    "run_id": run["run_id"],
+                    "run_name": run["run_name"],
+                    "retrain_type": run["retrain_type"] or "original",
+                    "test_type": test_type or "full",
+                    "data_filename": job.get("params", {}).get("data_filename"),
+                    "created_at": job.get("created_at"),
+                    "mean_error": mean_error,
+                    "critical_error_rate": crit,
+                    # The job's requested training params (the user's choices), so the
+                    # window can show them next to the charts.
+                    "params": job.get("params", {}),
+                    "metrics": metrics,
+                }
+            )
+    out.sort(key=lambda e: e["mean_error"])
+    return out
+
+
 def delete_job_runs(job_id: str) -> int:
     """Delete every MLflow run tagged with this job_id. Returns how many."""
     if not get_settings().mlflow_enabled:
@@ -207,11 +258,17 @@ def job_comparison(job_id: str) -> dict[str, Any]:
             df = _read_predictions(run["run_id"], "inference/results_inference")
         except Exception:  # noqa: BLE001 - skip a run whose predictions are missing
             continue
-        mean_error = next(
-            (v for k, v in run["metrics"].items() if k.endswith("/mean_error")), None
-        )
+        # test_type + mean error come from the same logged key, inf/<type>/mean_error,
+        # so the UI can filter the comparison by inference window.
+        test_type, mean_error = None, None
+        for k, v in run["metrics"].items():
+            if k.startswith("inf/") and k.endswith("/mean_error"):
+                test_type = k[len("inf/"):-len("/mean_error")]
+                mean_error = v
+                break
         models.append({
             "retrain_type": run["retrain_type"] or "original",
+            "test_type": test_type or "full",
             "mort": _roc_points(df["mortality_gt"], df["mortality_prob"]),
             "disch": _roc_points(df["disch_gt"], df["disch_prob"]),
             "mean_error": mean_error,

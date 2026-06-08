@@ -1,12 +1,10 @@
 """Optimal-threshold selection from a ROC / PR curve."""
 from __future__ import annotations
 
-from typing import Literal
-
 import numpy as np
 from sklearn.metrics import precision_recall_curve, roc_curve
 
-ThresholdMethod = Literal["youden", "min_distance", "precision_recall"]
+from pads.config import ThresholdMethod  # canonical definition; re-exported here
 
 
 def optimal_threshold(

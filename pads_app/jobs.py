@@ -36,7 +36,7 @@ def _now() -> str:
 
 # Inference runs over the whole ICU stay ("full"). The window-restricted variants
 # (last_48h/last_96h/first_48h) still exist in the CLI but are not run from the app.
-TEST_TYPES = ("full",)
+TEST_TYPES = ("full", "last_48h", "last_96h")
 
 # Normalizer sources the UI can pick between. "fitted" uses the normalizers
 # prepare_data fits on the uploaded dataset (the PADSConfig defaults). "mimic_iv"
@@ -46,6 +46,15 @@ NORMALIZER_SOURCES = ("fitted", "mimic_iv")
 MIMIC_IV_MORT_NORMALIZER = "mimic_iv_normalizer.pkl"
 MIMIC_IV_DISCH_NORMALIZER = "mimic_iv_normalizer_disch.pkl"
 
+# Criteria for picking the decision threshold when no fixed one is set (mirrors
+# pads.config.ThresholdMethod / the CLI choices). Only applies to retrained
+# models; the "original" baseline uses its fixed published thresholds instead.
+THRESHOLD_METHODS = ("youden", "min_distance", "precision_recall")
+
+# Validation metric EarlyStopping/ModelCheckpoint track during retraining
+# (mirrors pads.config.MonitorMetric / the CLI choices).
+MONITOR_METRICS = ("loss", "AUC", "accuracy", "f1_score", "precision", "recall")
+
 # The shipped base models (input to retraining; PADSConfig.retrain_*_model defaults).
 # The "original" baseline evaluates these as-is, with the mimic_iv normalizers they
 # were pretrained with, so it lands as its own comparable "original" results group.
@@ -53,6 +62,15 @@ BASE_MORT_MODEL = "lstm_mortality_model.keras"
 BASE_DISCH_MODEL = "lstm_disch_model.keras"
 BASELINE_RETRAIN_TYPE = "original"
 
+# The shipped base model's published decision thresholds. Applied ONLY to the
+# "original" baseline run so it is evaluated at its own published operating point;
+# retrained models leave fixed thresholds unset (config default None) and pick the
+# # optimum from their own test split instead.
+# BASE_TH_MORT = "0.1091446503996849"
+# BASE_TH_DISCH = "0.5377880930900574"
+
+BASE_TH_MORT = "0.32"
+BASE_TH_DISCH = "0.23"
 
 @dataclass
 class TrainParams:
@@ -64,11 +82,17 @@ class TrainParams:
     # advanced UI can split them. The CLI has always accepted them separately.
     learning_rate_mort: float = 1e-5
     learning_rate_disch: float = 1e-5
-    early_stopping_patience: int = 50
+    early_stopping_patience: int = 20
+    # Validation metric EarlyStopping/ModelCheckpoint track (see MONITOR_METRICS).
+    monitor_metric: str = "loss"
     # "fitted" (default) or "mimic_iv"; see NORMALIZER_SOURCES above. Only affects
     # which normalizer retrain/metrics/inference LOAD — prepare_data always fits
     # the dataset-specific ones so the mimic_iv baselines are never overwritten.
     normalizer_source: str = "fitted"
+    # Criterion to pick the decision threshold for retrained models (see
+    # THRESHOLD_METHODS). The "original" baseline ignores this and uses its fixed
+    # published thresholds.
+    threshold_method: str = "precision_recall"
     # When true, evaluate the shipped base model first (no retraining) as an
     # "original" baseline to compare the retrained models against.
     evaluate_original: bool = False
@@ -83,7 +107,9 @@ class TrainParams:
             "learning_rate_mort": self.learning_rate_mort,
             "learning_rate_disch": self.learning_rate_disch,
             "early_stopping_patience": self.early_stopping_patience,
+            "monitor_metric": self.monitor_metric,
             "normalizer_source": self.normalizer_source,
+            "threshold_method": self.threshold_method,
             "evaluate_original": self.evaluate_original,
             "seed": self.seed,
         }
@@ -93,7 +119,7 @@ class TrainParams:
 class Job:
     id: str
     params: TrainParams
-    status: str = "running"  # running | succeeded | failed | cancelled | interrupted
+    status: str = "running"  # queued | running | succeeded | failed | cancelled | interrupted
     steps: list[str] = field(default_factory=list)
     current_step: int = -1
     created_at: str = field(default_factory=_now)
@@ -145,7 +171,9 @@ class JobBusyError(RuntimeError):
 class JobManager:
     """Owns all jobs for the process, backed by a directory on disk.
 
-    v1 runs at most one job at a time (the pipeline writes to shared folders).
+    At most ``max_concurrent_jobs`` run at once (1 by default — the pipeline
+    writes to shared folders). Extra submissions are accepted and held as
+    ``queued``; each finishing job starts the next one (FIFO by created_at).
     """
 
     def __init__(self) -> None:
@@ -175,21 +203,59 @@ class JobManager:
     def start(self, params: TrainParams) -> Job:
         settings = get_settings()
         with self._lock:
-            if self._running_count() >= settings.max_concurrent_jobs:
-                raise JobBusyError("Another training job is already running.")
             job_id = uuid.uuid4().hex[:12]
-            job = Job(id=job_id, params=params, steps=_step_labels(params))
+            # Queue instead of rejecting when busy: a job that can't run right now
+            # waits as "queued" and is picked up by _start_next_queued() once a
+            # running slot frees up (FIFO by created_at).
+            at_capacity = self._running_count() >= settings.max_concurrent_jobs
+            job = Job(
+                id=job_id, params=params, steps=_step_labels(params),
+                status="queued" if at_capacity else "running",
+            )
             self._jobs[job_id] = job
             self._log_path(job_id).write_text("", encoding="utf-8")  # fresh log
             self._save(job)
+            start_now = not at_capacity
 
-        thread = threading.Thread(target=self._run, args=(job,), daemon=True)
-        thread.start()
+        if start_now:
+            threading.Thread(target=self._run, args=(job,), daemon=True).start()
         return job
+
+    def _start_next_queued(self) -> None:
+        """Start the oldest queued job if a running slot is free.
+
+        Called when a job finishes (from its own thread) so the queue drains
+        automatically. The capacity check + status flip happen under the lock so
+        two finishing jobs can't start the same queued one twice.
+        """
+        settings = get_settings()
+        with self._lock:
+            if self._running_count() >= settings.max_concurrent_jobs:
+                return
+            queued = sorted(
+                (j for j in self._jobs.values() if j.status == "queued"),
+                key=lambda j: j.created_at,
+            )
+            if not queued:
+                return
+            job = queued[0]
+            job.status = "running"
+            self._save(job)
+
+        threading.Thread(target=self._run, args=(job,), daemon=True).start()
 
     def cancel(self, job_id: str) -> bool:
         job = self._jobs.get(job_id)
-        if job is None or job.status != "running":
+        if job is None:
+            return False
+        # A queued job never started: just drop it from the queue. No process to
+        # kill and no slot to free, so nothing else needs to happen.
+        if job.status == "queued":
+            job.status = "cancelled"
+            job.finished_at = _now()
+            self._save(job)
+            return True
+        if job.status != "running":
             return False
         if job._proc is not None:
             job._proc.terminate()
@@ -229,12 +295,17 @@ class JobManager:
                 job = Job.from_dict(json.loads(p.read_text(encoding="utf-8")))
             except Exception:  # noqa: BLE001 - skip corrupt entries
                 continue
-            # A job marked 'running' on disk means the app died mid-run: its
-            # subprocess is gone, so reflect that instead of a false 'running'.
-            if job.status == "running":
+            # A job marked 'running'/'queued' on disk means the app died before it
+            # finished: the subprocess and the in-memory queue are both gone, so
+            # reflect that instead of a stuck 'running'/'queued' that never resumes.
+            if job.status in ("running", "queued"):
+                job.error = job.error or (
+                    "App restarted while this job was running."
+                    if job.status == "running"
+                    else "App restarted before this queued job started."
+                )
                 job.status = "interrupted"
                 job.finished_at = job.finished_at or _now()
-                job.error = job.error or "App restarted while this job was running."
                 self._save(job)
             self._jobs[job.id] = job
 
@@ -274,6 +345,8 @@ class JobManager:
         finally:
             job.finished_at = _now()
             self._save(job)
+            # Free slot → kick off whatever is next in the queue.
+            self._start_next_queued()
 
     def _stream(self, job: Job, argv: list[str], env: dict[str, str]) -> int:
         proc = subprocess.Popen(
@@ -352,11 +425,16 @@ def _commands(p: TrainParams) -> list[list[str]]:
             "--inference_disch_model", BASE_DISCH_MODEL,
             "--mort_normalizer", MIMIC_IV_MORT_NORMALIZER,
             "--disch_normalizer", MIMIC_IV_DISCH_NORMALIZER,
+            "--fixed_th_mort", BASE_TH_MORT,
+            "--fixed_th_disch", BASE_TH_DISCH,
         ]
         cmds.append(base + ["--mode", "calculate_metrics"] + baseline)
         for tt in TEST_TYPES:
             cmds.append(base + ["--mode", "inference", "--test_type", tt] + baseline)
 
+    # Threshold criterion for the retrained models (data-derived operating point).
+    # Applied to calculate_metrics/inference; retraining itself doesn't use it.
+    thr = ["--threshold_method", p.threshold_method]
     for rt in p.retrain_types:
         cmds.append(base + [
             "--mode", "retrain_models", "--retrain_type", rt,
@@ -364,10 +442,11 @@ def _commands(p: TrainParams) -> list[list[str]]:
             "--learning_rate_mort", str(p.learning_rate_mort),
             "--learning_rate_disch", str(p.learning_rate_disch),
             "--early_stopping_patience", str(p.early_stopping_patience),
+            "--monitor_metric", p.monitor_metric,
         ] + norm)
-        cmds.append(base + ["--mode", "calculate_metrics", "--retrain_type", rt] + norm)
+        cmds.append(base + ["--mode", "calculate_metrics", "--retrain_type", rt] + norm + thr)
         for tt in TEST_TYPES:
-            cmds.append(base + ["--mode", "inference", "--retrain_type", rt, "--test_type", tt] + norm)
+            cmds.append(base + ["--mode", "inference", "--retrain_type", rt, "--test_type", tt] + norm + thr)
     return cmds
 
 

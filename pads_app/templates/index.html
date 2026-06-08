@@ -15,6 +15,7 @@
     {% else %}
       <span class="badge warn">MLflow OFF — set MLFLOW_TRACKING_URI for live metrics</span>
     {% endif %}
+    <button id="openLeaderboard" class="primary" title="Rank every successful run by mean error severity">🏆 Best runs</button>
   </header>
 
   <main>
@@ -66,22 +67,37 @@
         <div class="grid">
           <label>LR · mortality <input type="number" id="lr_mort" step="0.000001" min="0" placeholder="0.00001" /></label>
           <label>LR · discharge <input type="number" id="lr_disch" step="0.000001" min="0" placeholder="0.00001" /></label>
-          <label>Early stopping patience <input type="number" id="early_stopping_patience" value="50" min="1" /></label>
+          <label>Early stopping patience <input type="number" id="early_stopping_patience" value="20" min="1" /></label>
+          <label>Optimize metric
+            <select id="monitor_metric">
+              <option value="loss" selected>Loss (minimize)</option>
+              <option value="AUC">AUC</option>
+              <option value="accuracy">Accuracy</option>
+              <option value="f1_score">F1 score</option>
+              <option value="precision">Precision</option>
+              <option value="recall">Recall</option>
+            </select>
+          </label>
           <label>Normalizers
             <select id="normalizer_source">
               <option value="fitted" selected>Fitted to your data</option>
               <option value="mimic_iv">Original (MIMIC-IV baseline)</option>
             </select>
           </label>
+          <label>Threshold method
+            <select id="threshold_method">
+              <option value="precision_recall" selected>Precision-Recall (max F1)</option>
+              <option value="youden">Youden's J (TPR − FPR)</option>
+              <option value="min_distance">Min distance to (0,1)</option>
+            </select>
+          </label>
         </div>
+        <p class="hint"><strong>Optimize metric</strong>: the validation metric early stopping watches to
+          pick the best epoch and decide when to stop (loss is minimized, the rest maximized).</p>
+        <p class="hint"><strong>Threshold method</strong>: how the decision threshold is chosen for retrained
+          models when scoring. The original baseline always uses its fixed published thresholds.</p>
       </fieldset>
-
-      <details class="note">
-        <summary>Inference is evaluated over the whole ICU stay</summary>
-        <ul>
-          <li><strong>full</strong> — every hour of each stay from hour 47 onward (the whole trajectory).</li>
-        </ul>
-      </details>
+      <br>
       <button id="trainBtn" class="primary" disabled>Run</button>
     </section>
 
@@ -96,21 +112,28 @@
       <h2>3 · Run <span id="jobStatus" class="badge"></span></h2>
       <ol id="steps" class="steps"></ol>
       <button id="cancelBtn" class="danger">Cancel</button>
-      <details>
+      <details id="logDetails" style="margin-top: 1em;">
         <summary>Logs</summary>
         <pre id="log" class="log"></pre>
       </details>
     </section>
 
+    <!-- Shared model selector: one choice filters both Retrain (4) and Results (5). -->
+    <section class="card model-selector hidden" id="modelSelectorCard">
+      <h2>Select model</h2>
+      <p class="hint">Choose which model to view — applies to both Retrain and Results below.</p>
+      <div id="modelTabs" class="tab-bar model-tabs"></div>
+    </section>
+
     <!-- 4. Live metrics -->
     <section class="card hidden" id="metricsCard">
-      <h2>4 · Metrics</h2>
+      <h2>4 · Retrain</h2>
       <div id="charts"></div>
     </section>
 
     <!-- 5. Results / artifacts -->
     <section class="card hidden" id="resultsCard">
-      <h2>5 · Results &amp; artifacts
+      <h2>5 · Results
         <a id="downloadAllBtn" class="dl-all hidden" download>⬇ Download all (.zip)</a>
       </h2>
       <div id="results"></div>
@@ -123,6 +146,25 @@
       <div id="comparison"></div>
     </section>
   </main>
+
+  <!-- Best runs: leaderboard window (all successful runs ranked by mean error) -->
+  <div id="leaderboard" class="lb-modal hidden">
+    <div class="lb-box">
+      <div class="lb-head">
+        <h2>🏆 Best runs · ranked by mean error severity (lower is better)</h2>
+        <div>
+          <button id="lbRefresh" class="ghost" title="Refresh">↻</button>
+          <button id="lbClose" class="ghost" title="Close">✕</button>
+        </div>
+      </div>
+      <div class="lb-body">
+        <ul id="lbList" class="lb-list"><li class="muted">Loading…</li></ul>
+        <div id="lbDetails" class="lb-details">
+          <p class="muted">Select a run on the left to see its results and download its artifacts.</p>
+        </div>
+      </div>
+    </div>
+  </div>
 
   <!-- error / info popup -->
   <div id="modal" class="modal hidden">

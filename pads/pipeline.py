@@ -245,6 +245,7 @@ class PADSPipeline:
                 epochs=self.config.epochs,
                 batch_size=self.config.batch_size,
                 early_stopping_patience=self.config.early_stopping_patience,
+                monitor_metric=self.config.monitor_metric,
             )
             # Per-epoch metrics are streamed by MLflowEpochLogger inside trainer.fit.
             model_path = self._model(self.config.inference_mort_model)
@@ -290,6 +291,7 @@ class PADSPipeline:
                 epochs=self.config.epochs,
                 batch_size=self.config.batch_size,
                 early_stopping_patience=self.config.early_stopping_patience,
+                monitor_metric=self.config.monitor_metric,
             )
             # Per-epoch metrics are streamed by MLflowEpochLogger inside trainer.fit.
             model_path = self._model(self.config.inference_disch_model)
@@ -297,7 +299,10 @@ class PADSPipeline:
             tracking.log_artifact(model_path, artifact_path="discharge_model")
 
     # --- step 3: metrics on the test split ---------------------------------
-    def calculate_metrics(self, *, threshold_method: ThresholdMethod = "min_distance") -> None:
+    def calculate_metrics(self, *, threshold_method: ThresholdMethod | None = None) -> None:
+        # None → use the config's choice (the single source of truth, set from the
+        # CLI/UI). An explicit arg still wins, e.g. for tests.
+        threshold_method = threshold_method or self.config.threshold_method
         rt = self.config.retrain_type
         parent_id = tracking.load_parent_run_id(self.config.base_path)
         with tracking.run(
@@ -324,10 +329,14 @@ class PADSPipeline:
             disch_pred = disch_out["y_pred"][:, 1]
             disch_gt = np.concatenate(disch_out["y_true"], axis=0).ravel()
 
+            # When fixed thresholds are configured (e.g. evaluating the shipped
+            # original model at its published operating point), use them instead
+            # of picking the optimum from this test split.
             th_mort, th_disch = plot_roc_combined(
                 mort_pred, mort_gt, disch_pred, disch_gt,
                 out_dir=self._results("images"),
-                inference_type=None, threshold_method=threshold_method, save=True,
+                inference_type=None, threshold_method=threshold_method,
+                fixed_thresholds=self.config.fixed_thresholds, save=True,
             )
             m_metrics = evaluate(mort_gt, mort_pred, th_mort)
             d_metrics = evaluate(disch_gt, disch_pred, th_disch)
@@ -375,8 +384,10 @@ class PADSPipeline:
         data_filename: str,
         *,
         test_type: TestType | None = None,
-        threshold_method: ThresholdMethod = "min_distance",
+        threshold_method: ThresholdMethod | None = None,
     ) -> pd.DataFrame:
+        # None → use the config's choice (set from the CLI/UI); explicit arg wins.
+        threshold_method = threshold_method or self.config.threshold_method
         test_type = test_type or self.config.test_type
         rt = self.config.retrain_type
         parent_id = tracking.load_parent_run_id(self.config.base_path)
@@ -402,10 +413,14 @@ class PADSPipeline:
             disch_pred = disch_out["y_pred"][:, 1]
             disch_gt = np.hstack(disch_out["y_true"])
 
-            # Reuse the decision thresholds chosen on the test split (the run that
-            # produced roc_combined.png). Picking them from the inference data would
-            # leak its labels and inflate the metrics, so we never recompute here.
-            th_mort, th_disch = self._load_test_thresholds()
+            # Decision thresholds: prefer the fixed ones from config (e.g. the
+            # original model's published operating point), otherwise reuse those
+            # chosen on the test split (the run that produced roc_combined.png).
+            # Picking them from the inference data would leak its labels and inflate
+            # the metrics, so we never recompute here.
+            th_mort, th_disch = (
+                self.config.fixed_thresholds or self._load_test_thresholds()
+            )
             plot_roc_combined(
                 mort_pred, mort_gt, disch_pred, disch_gt,
                 out_dir=self._results("images"),

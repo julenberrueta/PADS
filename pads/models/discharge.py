@@ -28,12 +28,18 @@ def compile_discharge_model(model: tf.keras.Model, learning_rate: float = 1e-5) 
     model.compile(
         loss="binary_crossentropy",
         optimizer=Adam(learning_rate=learning_rate),
+        # NOTE: labels are one-hot (N, 2), so the "accuracy" string already
+        # resolves to categorical accuracy — adding CategoricalAccuracy on top
+        # logged the identical curve twice, so we keep only "accuracy".
+        # The "precision"/"recall" strings resolve to binary Precision/Recall,
+        # which flatten the 2 columns and (with p0+p1=1, threshold 0.5) collapse
+        # to accuracy — three identical curves. class_id=1 pins them to the
+        # positive class (discharge) so they are meaningful and distinct.
         weighted_metrics=[
             "accuracy",
             "AUC",
-            "precision",
-            "recall",
-            tf.keras.metrics.CategoricalAccuracy(name="categorical_accuracy"),
+            tf.keras.metrics.Precision(class_id=1, name="precision"),
+            tf.keras.metrics.Recall(class_id=1, name="recall"),
             tf.keras.metrics.F1Score(name="f1_score", average="weighted"),
         ],
     )

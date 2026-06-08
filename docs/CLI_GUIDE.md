@@ -73,7 +73,7 @@ The same commands work on a laptop or a server. To compare retrain strategies in
 | `--epochs`                                       | int                                              | Default 1000. Reduce for quick smoke tests.                                                      |
 | `--batch_size`                                   | int                                              | Default 100.                                                                                      |
 | `--learning_rate_mort` / `--learning_rate_disch` | float                                            | Per-model learning rate. Default 1e-5.                                                            |
-| `--early_stopping_patience`                      | int                                              | Default 50.                                                                                       |
+| `--early_stopping_patience`                      | int                                              | Default 20.                                                                                       |
 | `--seed`                                         | int                                              | Default 42. Applied to Python, NumPy and TF.                                                      |
 | `--base_path`                                    | path                                             | Project root. Default `./`.                                                                       |
 

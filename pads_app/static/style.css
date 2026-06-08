@@ -8,6 +8,7 @@
   --ok: #2ecc71;
   --warn: #f1c40f;
   --danger: #e74c3c;
+  --pink: #ff7eb6;
 }
 
 * { box-sizing: border-box; }
@@ -61,6 +62,7 @@ main {
 .badge.failed { background: rgba(231, 76, 60, 0.2); color: var(--danger); }
 .badge.succeeded { background: rgba(46, 204, 113, 0.2); color: var(--ok); }
 .badge.cancelled, .badge.interrupted { background: rgba(241, 196, 15, 0.2); color: var(--warn); }
+.badge.queued { background: rgba(148, 163, 184, 0.22); color: var(--muted); }
 
 .dropzone {
   border: 2px dashed var(--border);
@@ -164,6 +166,35 @@ canvas { max-height: 260px; }
 .tab.active { color: var(--text); border-bottom-color: var(--accent); }
 .tab-panel.hidden { display: none; }
 
+/* Shared model selector card: stands out in pink so it's clearly the one place
+   to pick which model you're viewing across Retrain + Results. */
+#modelSelectorCard {
+  border-color: var(--pink);
+  background: rgba(255, 126, 182, 0.07);
+}
+#modelSelectorCard h2 { color: var(--pink); }
+.model-tabs { border-bottom: none; margin-bottom: 0; gap: 0.5rem; }
+.model-tabs .tab {
+  border: 1px solid var(--border); border-radius: 999px;
+  padding: 0.4rem 1.1rem; background: var(--bg); color: var(--muted);
+}
+.model-tabs .tab:hover { color: var(--text); border-color: var(--pink); }
+.model-tabs .tab.active {
+  background: var(--pink); color: #2a0f1d;
+  border-color: var(--pink); border-bottom-color: var(--pink);
+}
+
+/* Nested inference tabs (full / last_48h / …) inside a results panel. */
+.inf-tabs { margin-top: 0.25rem; }
+.inf-tabs .tab-bar { margin-bottom: 0.75rem; }
+.inf-tabs .tab { padding: 0.3rem 0.7rem; font-size: 0.85rem; font-weight: 500; }
+
+/* Inference-window filter in the Model comparison section. */
+.cmp-filter { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; margin-bottom: 1rem; }
+.cmp-filter-label { font-size: 0.8rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.cmp-filter .tab-bar { border-bottom: none; margin-bottom: 0; }
+.cmp-filter .tab { padding: 0.3rem 0.8rem; font-size: 0.85rem; font-weight: 500; }
+
 .chart-row { display: flex; flex-wrap: wrap; gap: 1.25rem; justify-content: space-evenly; align-items: flex-start; }
 .chart-col { flex: 1 1 360px; min-width: 300px; height: 300px; }
 .chart-col canvas { max-height: none; }
@@ -190,8 +221,9 @@ details summary { cursor: pointer; color: var(--muted); }
 table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
 th, td { text-align: left; padding: 0.35rem 0.5rem; border-bottom: 1px solid var(--border); }
 a.dl { color: var(--accent); text-decoration: none; }
-a.dl-all {
+a.dl-all, button.dl-all {
   float: right;
+  background: transparent;
   color: var(--accent);
   text-decoration: none;
   padding: 0.3rem 0.8rem;
@@ -201,9 +233,9 @@ a.dl-all {
   font-weight: normal;
   cursor: pointer;
 }
-a.dl-all:hover { background: var(--accent); color: #fff; }
+a.dl-all:hover, button.dl-all:hover { background: var(--accent); color: #fff; }
 a.dl-all.hidden { display: none; }
-a.dl-all.loading { opacity: 0.7; pointer-events: none; }
+a.dl-all.loading, button.dl-all.loading { opacity: 0.7; pointer-events: none; }
 
 .loader {
   display: flex; align-items: center; gap: 0.6rem;
@@ -219,6 +251,12 @@ a.dl-all.loading { opacity: 0.7; pointer-events: none; }
 /* Square ROC comparison charts (maintainAspectRatio:1 makes the canvas square;
    height:auto lets the column grow to fit the square canvas + download link). */
 .chart-col.roc { flex: 1 1 320px; max-width: 420px; height: auto; }
+/* Decision-threshold caption under a ROC chart. */
+.roc-threshold {
+  margin-top: 0.4rem; text-align: center; font-size: 0.8rem; color: var(--muted);
+  display: flex; flex-wrap: wrap; justify-content: center; gap: 0.25rem 0.75rem;
+}
+.roc-threshold span { white-space: nowrap; }
 
 /* "Metrics" / "Inference" section headers inside a results tab. */
 .result-section { margin-top: 1.75rem; padding-top: 0.85rem; border-top: 1px solid var(--border); }
@@ -228,16 +266,22 @@ a.dl-all.loading { opacity: 0.7; pointer-events: none; }
 
 .job-list { list-style: none; padding: 0; margin: 0; }
 .job-list li.muted { color: var(--muted); }
-.job-item {
+.job-list li.show-more { display: flex; justify-content: center; padding: 0.4rem 0; }
+.job-list li.show-more button { font-size: 0.85rem; color: var(--accent); }
+.job-list li.show-more button:hover { text-decoration: underline; }
+.job-item { border-radius: 6px; border: 1px solid transparent; }
+.job-item .ji-row {
   display: flex; align-items: center; gap: 0.75rem;
-  padding: 0.55rem 0.7rem; border-radius: 6px; cursor: pointer;
-  border: 1px solid transparent;
+  padding: 0.55rem 0.7rem; cursor: pointer; border-radius: 6px;
 }
 .job-item:hover { background: rgba(79, 140, 255, 0.08); border-color: var(--border); }
 .job-item.active { border-color: var(--accent); background: rgba(79, 140, 255, 0.1); }
 .job-item .ji-left { flex: 1; font-size: 0.88rem; display: flex; align-items: center; gap: 0.5rem; min-width: 0; }
 .job-item .ji-left span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.job-item .ji-right { color: var(--muted); font-size: 0.78rem; white-space: nowrap; text-align: right; }
+.job-item .ji-right { color: var(--muted); font-size: 0.78rem; text-align: right; line-height: 1.4; white-space: nowrap; }
+/* Parameters of the selected run, dropped down below its row. */
+.job-item .ji-params { padding: 0.1rem 0.7rem 0.7rem; }
+.job-item .ji-params .lb-params { margin-bottom: 0; }
 
 button.ghost {
   background: transparent; color: var(--muted);
@@ -258,3 +302,74 @@ button.ghost:hover { color: var(--text); }
   max-width: 520px;
 }
 .modal-box h3 { margin-top: 0; }
+
+/* Best-runs leaderboard window ------------------------------------------------ */
+header #openLeaderboard { margin-left: auto; }
+
+.lb-modal {
+  position: fixed; inset: 0; z-index: 50;
+  background: rgba(0,0,0,0.6);
+  display: flex; align-items: center; justify-content: center;
+  padding: 2rem;
+}
+.lb-box {
+  background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+  width: min(1600px, 97vw); height: min(900px, 93vh);
+  display: flex; flex-direction: column; overflow: hidden;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.45);
+}
+.lb-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 1rem 1.25rem; border-bottom: 1px solid var(--border);
+}
+.lb-head h2 { margin: 0; font-size: 1.05rem; }
+.lb-head .ghost { font-size: 1.1rem; }
+.lb-body { flex: 1; display: flex; min-height: 0; }
+
+.lb-list {
+  list-style: none; margin: 0; padding: 0.5rem;
+  width: 360px; flex: none; overflow-y: auto;
+  border-right: 1px solid var(--border);
+}
+.lb-list li.muted { padding: 0.6rem; color: var(--muted); }
+.lb-item {
+  display: flex; align-items: center; gap: 0.7rem;
+  padding: 0.6rem 0.7rem; border-radius: 6px; cursor: pointer;
+  border: 1px solid transparent;
+}
+.lb-item:hover { background: rgba(79,140,255,0.08); border-color: var(--border); }
+.lb-item.active { border-color: var(--accent); background: rgba(79,140,255,0.1); }
+.lb-rank { font-weight: 700; color: var(--muted); width: 1.6rem; text-align: right; flex: none; }
+.lb-item .lb-main { flex: 1; min-width: 0; }
+.lb-item .lb-main .lb-err { font-weight: 600; }
+.lb-item .lb-sub { font-size: 0.78rem; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.lb-details { flex: 1; overflow-y: auto; padding: 1.5rem 1.75rem; min-width: 0; }
+
+/* Detail header: title + key figures + download, on a subtle banner. */
+.lb-detail-head {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 1rem;
+  padding: 1rem 1.25rem; margin-bottom: 1.25rem;
+  background: rgba(79,140,255,0.06); border: 1px solid var(--border); border-radius: 10px;
+}
+.lb-detail-head h3 { margin: 0; font-size: 1.15rem; flex-basis: 100%; }
+.lb-detail-head .lb-sub { margin: 0; color: var(--muted); font-size: 0.85rem; flex-basis: 100%; }
+.lb-detail-head .lb-figure { display: flex; flex-direction: column; }
+.lb-detail-head .lb-figure .k { font-size: 0.72rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.lb-detail-head .lb-figure .v { font-size: 1.3rem; font-weight: 700; }
+.lb-detail-head .lb-figure .v.good { color: var(--ok); }
+.lb-detail-head button.dl-all { float: none; margin-left: auto; align-self: center; }
+
+/* Params shown next to the charts: a grid of compact key/value cards. */
+.lb-params {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 0.6rem; margin-bottom: 1.5rem;
+}
+.lb-param {
+  background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+  padding: 0.5rem 0.7rem; display: flex; flex-direction: column; gap: 0.15rem;
+}
+.lb-param .k { font-size: 0.72rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.03em; }
+.lb-param .v { font-size: 0.95rem; font-weight: 600; word-break: break-word; }
+.lb-section-label { font-size: 0.8rem; color: var(--muted); text-transform: uppercase;
+  letter-spacing: 0.05em; margin: 0 0 0.6rem; }

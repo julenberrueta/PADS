@@ -12,7 +12,14 @@ from fastapi.templating import Jinja2Templates
 from pads.data.schema import N_TIME_OFFSETS, DatasetValidationError, validate_dataset
 from pads_app import mlflow_api
 from pads_app.config import get_settings
-from pads_app.jobs import NORMALIZER_SOURCES, JobBusyError, TrainParams, manager
+from pads_app.jobs import (
+    MONITOR_METRICS,
+    NORMALIZER_SOURCES,
+    THRESHOLD_METHODS,
+    JobBusyError,
+    TrainParams,
+    manager,
+)
 
 _HERE = Path(__file__).parent
 app = FastAPI(title="PADS Trainer")
@@ -56,8 +63,12 @@ async def api_train(
     # Per-model learning rates. The basic UI sends the same value for both.
     learning_rate_mort: float = Form(1e-5),
     learning_rate_disch: float = Form(1e-5),
-    early_stopping_patience: int = Form(50),
+    early_stopping_patience: int = Form(20),
+    # Validation metric EarlyStopping/ModelCheckpoint track; see MONITOR_METRICS.
+    monitor_metric: str = Form("loss"),
     normalizer_source: str = Form("fitted"),  # "fitted" | "mimic_iv"
+    # Threshold criterion for retrained models; see THRESHOLD_METHODS.
+    threshold_method: str = Form("precision_recall"),
     evaluate_original: bool = Form(False),
     seed: int = Form(42),
 ):
@@ -83,6 +94,18 @@ async def api_train(
             detail=f"normalizer_source must be one of {NORMALIZER_SOURCES}.",
         )
 
+    if threshold_method not in THRESHOLD_METHODS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"threshold_method must be one of {THRESHOLD_METHODS}.",
+        )
+
+    if monitor_metric not in MONITOR_METRICS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"monitor_metric must be one of {MONITOR_METRICS}.",
+        )
+
     # Persist the dataset where the pipeline expects it: <base_path>/data/.
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     (settings.data_dir / filename).write_bytes(raw)
@@ -95,7 +118,9 @@ async def api_train(
         learning_rate_mort=learning_rate_mort,
         learning_rate_disch=learning_rate_disch,
         early_stopping_patience=early_stopping_patience,
+        monitor_metric=monitor_metric,
         normalizer_source=normalizer_source,
+        threshold_method=threshold_method,
         evaluate_original=evaluate_original,
         seed=seed,
     )
@@ -179,6 +204,12 @@ def api_download(run_id: str, path: str):
     # Serve inline (no forced attachment) so images can be previewed/opened in
     # the browser; the frontend's `download` attribute handles actual downloads.
     return FileResponse(local)
+
+
+@app.get("/api/successful-runs")
+def api_successful_runs():
+    """All finished inference runs across succeeded jobs, ranked by mean error (asc)."""
+    return {"runs": mlflow_api.successful_inference_runs(manager.list())}
 
 
 @app.get("/api/jobs/{job_id}/comparison")

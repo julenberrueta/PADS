@@ -74,25 +74,32 @@ def fit(
     log_dir: str | Path,
     epochs: int = 1000,
     batch_size: int = 100,
-    early_stopping_patience: int = 50,
+    early_stopping_patience: int = 20,
+    monitor_metric: str = "loss",
     verbose: int = 2,
 ) -> tf.keras.callbacks.History:
     log_dir = Path(log_dir) / model_name
     log_dir.mkdir(parents=True, exist_ok=True)
 
+    # EarlyStopping/ModelCheckpoint watch the validation copy of the chosen metric.
+    # Loss is minimised; every other compiled metric (AUC/accuracy/F1/precision/
+    # recall) is maximised. Keras can infer the mode from the name, but we set it
+    # explicitly so a custom metric never gets the wrong direction.
+    monitor = f"val_{monitor_metric}"
+    monitor_mode = "min" if monitor_metric == "loss" else "max"
     prefix = "mort" if kind == "mortality" else "disch"
     callbacks = [
         TensorBoard(log_dir=str(log_dir), write_graph=True),
         EarlyStopping(
-            monitor="val_loss",
+            monitor=monitor,
             patience=early_stopping_patience,
-            mode="min",
+            mode=monitor_mode,
             restore_best_weights=True,
         ),
         ModelCheckpoint(
             filepath=str(log_dir / f"{model_name}_best.keras"),
-            monitor="val_loss",
-            mode="min",
+            monitor=monitor,
+            mode=monitor_mode,
             save_best_only=True,
             verbose=1,
         ),
