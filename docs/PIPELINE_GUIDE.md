@@ -134,7 +134,7 @@ The pipeline has four operations, exposed via the Python API and the `pads` CLI:
 
 | Mode                    | What it does                                                                                         |
 |-------------------------|------------------------------------------------------------------------------------------------------|
-| `prepare_data`          | Train/test split, median imputation values, fitted MinMaxScalers, windowed `.pkl` datasets, and dataset provenance. |
+| `prepare_data`          | Stratified train/val/test split, median imputation values, fitted MinMaxScalers, windowed `.pkl` datasets, and dataset provenance. |
 | `retrain_models`        | Retrains the mortality and discharge LSTMs. `--retrain_type` controls freezing strategy.             |
 | `calculate_metrics`     | Picks optimal thresholds, writes test ROC and threshold JSON.                                        |
 | `inference`             | End-to-end prediction + error categorisation + plots.                                                |
@@ -283,7 +283,7 @@ PADS has no workflow engine. You run the four steps yourself with the `pads` CLI
 
 ```
 prepare_data
-        │  data/processed/{medians_48h.json, train/test_stays.txt,
+        │  data/processed/{medians_48h.json, train/val/test_stays.txt,
         │  lstm_last_48h_*.pkl, icu_expire_flag_*.pkl,
         │  lstm_disch_3point_48h_*.pkl, outcome_disch_3point_48h_*.pkl,
         │  source_dataset.json}, normalizers/*.pkl
@@ -635,14 +635,14 @@ records dataset provenance.
 **Writes:**
 
 - `data/processed/medians_48h.json` — medians of `gcs_min`, `meanbp_min`, `bilirubin_max`, `platelet_min`, `creatinine_max` over `hr ≤ 48`.
-- `data/processed/train_stays.txt`, `data/processed/test_stays.txt` — 80/20 split of stays with `los ≥ 48`.
+- `data/processed/train_stays.txt`, `data/processed/val_stays.txt`, `data/processed/test_stays.txt` — stratified 70/10/20 stay-level split of stays with `los ≥ 48` (stratified by per-stay mortality so the positive class is present in every fold). Splitting on `stay_id` keeps all windows of a patient in one fold.
 - `normalizers/mortality_normalizer.pkl` — mortality MinMaxScaler, fit on your training data.
 - `normalizers/discharge_normalizer.pkl` — discharge MinMaxScaler, fit on your training data.
-- `data/processed/lstm_last_48h_{train,test}.pkl` — `dict[stay_id, (1, 48, F+1)]` with the most recent 48 h, time axis most-recent-first (mortality).
-- `data/processed/icu_expire_flag_{train,test}.pkl` — `dict[stay_id, int]` (mortality).
-- `data/processed/lstm_disch_3point_48h_{train,test}.pkl` — `dict[stay_id, (k, 48, F+1)]` with up to 5 anchor windows per stay (first, second, intermediate before/after, final), time axis oldest-first (discharge).
-- `data/processed/outcome_disch_3point_48h_{train,test}.pkl` — `dict[stay_id, (k, 1)]` per-window discharge label.
-- `data/processed/source_dataset.json` — provenance: `{dataset, dataset_sha256, created_at, n_train_stays, n_test_stays}` (the last two counted from `train_stays.txt` / `test_stays.txt`). Later steps that only load the `.pkl` files (`retrain_models`, `calculate_metrics`) read this to tag their MLflow run with the raw dataset and split sizes that produced their inputs.
+- `data/processed/lstm_last_48h_{train,val,test}.pkl` — `dict[stay_id, (1, 48, F+1)]` with the most recent 48 h, time axis most-recent-first (mortality).
+- `data/processed/icu_expire_flag_{train,val,test}.pkl` — `dict[stay_id, int]` (mortality).
+- `data/processed/lstm_disch_3point_48h_{train,val,test}.pkl` — `dict[stay_id, (k, 48, F+1)]` with up to 5 anchor windows per stay (first, second, intermediate before/after, final), time axis oldest-first (discharge).
+- `data/processed/outcome_disch_3point_48h_{train,val,test}.pkl` — `dict[stay_id, (k, 1)]` per-window discharge label.
+- `data/processed/source_dataset.json` — provenance: `{dataset, dataset_sha256, created_at, n_train_stays, n_val_stays, n_test_stays}` (the last three counted from the `*_stays.txt` files). Later steps that only load the `.pkl` files (`retrain_models`, `calculate_metrics`) read this to tag their MLflow run with the raw dataset and split sizes that produced their inputs.
 
 The normalizers are fit only on **training stays** to avoid leakage. The committed `normalizers/mimic_iv_*.pkl` baselines (from the original MIMIC-IV fit) are left untouched — they are kept as a reference and are not used unless you point `mort_normalizer` / `disch_normalizer` at them.
 

@@ -253,6 +253,15 @@ def _check_dataset(raw: bytes, filename: str) -> dict:
         null_stays = set(df.loc[df["icu_expire_flag"].isna(), "stay_id"].dropna().unique())
         kept = [s for s in los.index if s not in null_stays]
         short_stays = [s for s in kept if los[s] < N_TIME_OFFSETS]
+        final = [s for s in kept if los[s] >= N_TIME_OFFSETS]
+        # When the dataset carries a hospital_episode_id, the split groups whole
+        # episodes into one fold. Report how many of the used patients have more
+        # than one ICU stay so the UI can flag the grouping.
+        has_episode = "hospital_episode_id" in df.columns
+        multi_stay_patients = 0
+        if has_episode and final:
+            ep = df.groupby("stay_id")["hospital_episode_id"].first().loc[final]
+            multi_stay_patients = int((ep.value_counts() > 1).sum())
         return {
             "ok": True,
             "filename": Path(filename).name,
@@ -260,7 +269,9 @@ def _check_dataset(raw: bytes, filename: str) -> dict:
             "stays": int(df["stay_id"].nunique()),
             "dropped_stays": len(null_stays),       # missing icu_expire_flag
             "short_stays": len(short_stays),        # stay shorter than 48 h
-            "final_stays": len(kept) - len(short_stays),
+            "final_stays": len(final),
+            "has_episode_id": has_episode,          # hospital_episode_id present
+            "multi_stay_patients": multi_stay_patients,  # patients with >1 ICU stay
         }
     except DatasetValidationError as exc:
         return {"ok": False, "error": str(exc)}
