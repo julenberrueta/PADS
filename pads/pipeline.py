@@ -32,7 +32,7 @@ from pads.training import trainer
 from pads.training.splits import (
     build_xy_discharge,
     build_xy_rolling,
-    prepare_train_val_test,
+    encode_xy,
     split_stays,
 )
 from pads.viz.plots import plot_error, plot_roc_combined
@@ -84,6 +84,8 @@ class PADSPipeline:
             if "n_train_stays" in info:
                 tags["n_train_stays"] = info["n_train_stays"]
                 tags["n_test_stays"] = info["n_test_stays"]
+                if "n_val_stays" in info:
+                    tags["n_val_stays"] = info["n_val_stays"]
         return tags
 
     # --- path helpers -------------------------------------------------------
@@ -153,10 +155,35 @@ class PADSPipeline:
         medians = df.loc[df["hr"] <= N_TIME_OFFSETS, IMPUTE_FIRST_ROW].median().to_dict()
         loader.save_json(medians, self._processed("medians_48h.json"))
 
-        # train/test stay split
-        eligible = df.loc[df["los"] >= N_TIME_OFFSETS, "stay_id"].unique().tolist()
-        train_ids, test_ids = split_stays(eligible, seed=self.config.seed)
+        # Stratified 3-way stay split (70/10/20). Stratify by per-stay mortality
+        # so the (typically rare) positive class is represented in every fold.
+        # When the dataset carries a hospital_episode_id, split on whole episodes
+        # so every ICU stay of the same hospital admission stays in one fold.
+        cols = ["stay_id", "icu_expire_flag"]
+        has_episode = "hospital_episode_id" in df.columns
+        if has_episode:
+            cols.append("hospital_episode_id")
+        eligible_df = df.loc[df["los"] >= N_TIME_OFFSETS, cols]
+        grouped = eligible_df.groupby("stay_id")
+        per_stay = grouped["icu_expire_flag"].max()
+        eligible = per_stay.index.tolist()
+        groups = None
+        if has_episode:
+            ep = grouped["hospital_episode_id"].first().loc[eligible]
+            # Stays with no hospital_episode_id form their own singleton episode
+            # (a synthetic per-stay id) so they're split individually instead of
+            # being lumped into one null group. Cast to str so the whole array is
+            # uniformly typed — a mix of str and None/NaN can't be sorted.
+            fallback = "__stay_" + ep.index.to_series().astype(str)
+            groups = ep.where(ep.notna(), fallback).astype(str).to_numpy()
+            n_episodes = len(set(groups))
+            print(f"[PADS] Grouping the split by hospital_episode_id "
+                  f"({n_episodes} episode(s) across {len(eligible)} stays).")
+        train_ids, val_ids, test_ids = split_stays(
+            eligible, per_stay.to_numpy(), groups=groups, seed=self.config.seed,
+        )
         loader.save_stays(train_ids, self._processed("train_stays.txt"))
+        loader.save_stays(val_ids, self._processed("val_stays.txt"))
         loader.save_stays(test_ids, self._processed("test_stays.txt"))
 
         # fit normalizers on the training stays
@@ -164,8 +191,8 @@ class PADSPipeline:
         self._fit_mortality_normalizer(train_data["data"])
         self._fit_discharge_normalizer(train_data["data"])
 
-        # windowed retrain/test datasets for both models
-        for split in ("train", "test"):
+        # windowed datasets for both models, one per split
+        for split in ("train", "val", "test"):
             self._build_mortality_dataset(data_filename, split, medians)
             self._build_discharge_dataset(data_filename, split, medians)
 
@@ -175,6 +202,7 @@ class PADSPipeline:
     def _write_provenance(self, data_path: Path) -> None:
         """Record the source dataset (name + full hash + timestamp + split sizes)."""
         n_train = len(loader.load_stays(self._processed("train_stays.txt")))
+        n_val = len(loader.load_stays(self._processed("val_stays.txt")))
         n_test = len(loader.load_stays(self._processed("test_stays.txt")))
         loader.save_json(
             {
@@ -182,6 +210,7 @@ class PADSPipeline:
                 "dataset_sha256": tracking.file_sha256(data_path),
                 "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                 "n_train_stays": n_train,
+                "n_val_stays": n_val,
                 "n_test_stays": n_test,
             },
             self._provenance_path(),
@@ -210,26 +239,23 @@ class PADSPipeline:
         rt = self.config.retrain_type
         with tracking.run(f"retrain_mortality_{rt}", model="mortality", **self._common_tags()):
             self._log_config_params()
-            data = loader.load_pkl(self._processed("lstm_last_48h_train.pkl"))
-            outcome = loader.load_pkl(self._processed("icu_expire_flag_train.pkl"))
+            data_tr = loader.load_pkl(self._processed("lstm_last_48h_train.pkl"))
+            out_tr = loader.load_pkl(self._processed("icu_expire_flag_train.pkl"))
+            data_val = loader.load_pkl(self._processed("lstm_last_48h_val.pkl"))
+            out_val = loader.load_pkl(self._processed("icu_expire_flag_val.pkl"))
 
-            stay_ids = list(data.keys())
-            train_ids, test_ids = split_stays(stay_ids, seed=self.config.seed)
-            X_train, y_train = build_xy_rolling(data, outcome, train_ids)
-            X_test, y_test = build_xy_rolling(data, outcome, test_ids)
+            X_train, y_train = build_xy_rolling(data_tr, out_tr, list(data_tr.keys()))
+            X_val, y_val = build_xy_rolling(data_val, out_val, list(data_val.keys()))
 
             X_train = normalizer.fit_or_load_and_transform(
                 X_train, self._norm(self.config.mort_normalizer), load_existing=True, save=False,
             )
-            X_test = normalizer.fit_or_load_and_transform(
-                X_test, self._norm(self.config.mort_normalizer), load_existing=True, save=False,
+            X_val = normalizer.fit_or_load_and_transform(
+                X_val, self._norm(self.config.mort_normalizer), load_existing=True, save=False,
             )
 
-            X_tr, y_tr, X_te, y_te, X_val, y_val = prepare_train_val_test(
-                X_train, X_test, y_train, y_test, seed=self.config.seed,
-            )
-            X_val_all = np.concatenate([X_te, X_val])
-            y_val_all = np.concatenate([y_te, y_val])
+            X_tr, y_tr = encode_xy(X_train, y_train)
+            X_val_all, y_val_all = encode_xy(X_val, y_val)
 
             from pads.models.mortality import compile_mortality_model
 
@@ -256,26 +282,23 @@ class PADSPipeline:
         rt = self.config.retrain_type
         with tracking.run(f"retrain_discharge_{rt}", model="discharge", **self._common_tags()):
             self._log_config_params()
-            data = loader.load_pkl(self._processed("lstm_disch_3point_48h_train.pkl"))
-            outcome = loader.load_pkl(self._processed("outcome_disch_3point_48h_train.pkl"))
+            data_tr = loader.load_pkl(self._processed("lstm_disch_3point_48h_train.pkl"))
+            out_tr = loader.load_pkl(self._processed("outcome_disch_3point_48h_train.pkl"))
+            data_val = loader.load_pkl(self._processed("lstm_disch_3point_48h_val.pkl"))
+            out_val = loader.load_pkl(self._processed("outcome_disch_3point_48h_val.pkl"))
 
-            stay_ids = [s for s in data if s in outcome]
-            train_ids, test_ids = split_stays(stay_ids, seed=self.config.seed)
-            X_train, y_train = build_xy_discharge(data, outcome, train_ids)
-            X_test, y_test = build_xy_discharge(data, outcome, test_ids)
+            X_train, y_train = build_xy_discharge(data_tr, out_tr, list(data_tr.keys()))
+            X_val, y_val = build_xy_discharge(data_val, out_val, list(data_val.keys()))
 
             X_train = normalizer.fit_or_load_and_transform(
                 X_train, self._norm(self.config.disch_normalizer), load_existing=True, save=False,
             )
-            X_test = normalizer.fit_or_load_and_transform(
-                X_test, self._norm(self.config.disch_normalizer), load_existing=True, save=False,
+            X_val = normalizer.fit_or_load_and_transform(
+                X_val, self._norm(self.config.disch_normalizer), load_existing=True, save=False,
             )
 
-            X_tr, y_tr, X_te, y_te, X_val, y_val = prepare_train_val_test(
-                X_train, X_test, y_train, y_test, seed=self.config.seed,
-            )
-            X_val_all = np.concatenate([X_te, X_val])
-            y_val_all = np.concatenate([y_te, y_val])
+            X_tr, y_tr = encode_xy(X_train, y_train)
+            X_val_all, y_val_all = encode_xy(X_val, y_val)
 
             from pads.models.discharge import compile_discharge_model
 

@@ -94,6 +94,15 @@ async function handleFile(file) {
       total.textContent = `✓ ${data.final_stays} patient(s) will be used.`;
       box.appendChild(total);
     }
+    if (data.has_episode_id) {
+      const ep = document.createElement("div");
+      ep.className = "badge warn";
+      ep.style.marginTop = "0.5rem";
+      ep.textContent =
+        `⚠ hospital_episode_id found — ${data.multi_stay_patients} patient(s) with more than one ICU stay. ` +
+        `Stays of the same hospital episode are kept in the same split.`;
+      box.appendChild(ep);
+    }
     datasetValid = true;
     $("trainBtn").disabled = false;
   } else {

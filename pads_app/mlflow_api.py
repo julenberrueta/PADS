@@ -184,8 +184,9 @@ def download_job_zip(job_id: str) -> str:
 
     A job spans several MLflow runs (retrain mortality/discharge, calculate
     metrics, inference, ...), so the models live in different runs than the
-    metrics. Each run's artifacts are downloaded into a folder named after the
-    run so they don't collide, then the whole tree is zipped.
+    metrics. Each run's artifacts are downloaded into a folder named after its
+    retrain_type, then the whole tree is zipped. Inference runs are the one case
+    that needs care (see the loop below).
     """
     import re
     import shutil
@@ -196,19 +197,79 @@ def download_job_zip(job_id: str) -> str:
         raise ValueError(f"No MLflow runs found for job {job_id}")
 
     staging = tempfile.mkdtemp()
+    # Drop the job's run parameters at the root of the archive (next to the
+    # per-type model folders) so whoever unzips it can see exactly which
+    # settings produced these models without digging into the app.
+    _write_job_parameters(job_id, staging)
+
     client = _client()
-    # Group by retrain_type (original/full/lstm/dense/scratch). Each run's
-    # artifacts sit under a distinct subfolder (metrics, inference,
-    # mortality_model, discharge_model, dataset), so runs of the same type merge
-    # into one folder without colliding.
+    # Group by retrain_type (original/full/lstm/dense/scratch). Most runs of a
+    # type sit under distinct subfolders (metrics, mortality_model,
+    # discharge_model, dataset) and merge cleanly. The exception is inference:
+    # a type has one inference run per test_type (full/last_48h/last_96h) and
+    # they ALL log under "inference/" with the same filenames, so merging them
+    # into one folder would overwrite all but one. Rename each inference run's
+    # folder to inference_<test_type> so every window survives side by side.
     for run in runs:
         top = re.sub(r"[^A-Za-z0-9._-]+", "_", run["retrain_type"]) or "other"
         dest = os.path.join(staging, top)
         os.makedirs(dest, exist_ok=True)
         client.download_artifacts(run["run_id"], "", dest)
+        if run.get("step") == "inference":
+            _split_inference_folder(dest, run)
 
     base = os.path.join(tempfile.mkdtemp(), f"pads_job_{job_id}")
     return shutil.make_archive(base, "zip", staging)
+
+
+def _split_inference_folder(dest: str, run: dict[str, Any]) -> None:
+    """Rename an inference run's ``inference/`` folder to ``inference_<test_type>``.
+
+    All three inference runs of a retrain_type (full/last_48h/last_96h) log under
+    the same ``inference/`` path with identical filenames, so leaving them merged
+    in ``dest`` makes them overwrite each other. We tag the folder with the run's
+    test_type (from the ``test_type_active`` param, falling back to the run name
+    ``inference_<rt>_<test_type>``) so each window's results survive separately.
+    """
+    import re
+    import shutil
+
+    test_type = run.get("params", {}).get("test_type_active")
+    if not test_type:
+        # Fallback: run name is "inference_<retrain_type>_<test_type>".
+        name = run.get("run_name", "")
+        rt = run.get("retrain_type", "")
+        prefix = f"inference_{rt}_"
+        test_type = name[len(prefix):] if name.startswith(prefix) else (name or "unknown")
+    test_type = re.sub(r"[^A-Za-z0-9._-]+", "_", test_type) or "unknown"
+
+    src = os.path.join(dest, "inference")
+    if not os.path.isdir(src):
+        return
+    target = os.path.join(dest, f"inference_{test_type}")
+    if os.path.isdir(target):
+        shutil.rmtree(target)  # re-download of the same window → replace
+    shutil.move(src, target)
+
+
+def _write_job_parameters(job_id: str, staging: str) -> None:
+    """Write the job's stored metadata as ``parameters.json`` into ``staging``.
+
+    The job record (status, steps and the ``params`` used to launch it) lives at
+    ``<state_dir>/jobs/<job_id>.json``. Copying it to the archive root gives the
+    downloaded bundle a self-describing parameter manifest. Best-effort: if the
+    record is missing the archive is still built without it.
+    """
+    import json
+
+    meta_path = get_settings().state_dir / "jobs" / f"{job_id}.json"
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 - no record (e.g. MLflow-only run) → skip
+        return
+    out = os.path.join(staging, "parameters.json")
+    with open(out, "w", encoding="utf-8") as fh:
+        json.dump(meta, fh, indent=2)
 
 
 def _roc_points(
